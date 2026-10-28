@@ -221,28 +221,30 @@ menu "Muse"
         int "WAV recording: TF card SDMMC clock GPIO"
         depends on MUSE_WAV_RECORD
         range -1 48
-        default -1
+        default 47
         help
-            SDMMC CLK for the TF slot in 1-bit mode. -1 means
-            "not configured": recording stays disabled. Set this
-            only to the SZP board's real TF wiring, once it is
-            confirmed from the schematic / pin table. Do not guess:
-            a wrong pin can clash with the LCD or audio clocks.
+            SDMMC CLK for the TF slot in 1-bit mode, confirmed from
+            the SZP schematic (XD-ESP32S3-V1.0_1, page 1, TF interface:
+            IO47_SD_CLK). -1 disables recording.
 
     config MUSE_WAV_SD_CMD
         int "WAV recording: TF card SDMMC command GPIO"
         depends on MUSE_WAV_RECORD
         range -1 48
-        default -1
+        default 48
         help
-            SDMMC CMD for the TF slot in 1-bit mode. See SD_CLK.
+            SDMMC CMD for the TF slot in 1-bit mode, confirmed from
+            the SZP schematic (page 1, TF interface: IO48_SD_CMD).
 
     config MUSE_WAV_SD_D0
         int "WAV recording: TF card SDMMC data 0 GPIO"
         depends on MUSE_WAV_RECORD
         range -1 48
-        default -1
+        default 21
         help
-            SDMMC D0 for the TF slot in 1-bit mode. See SD_CLK.
+            SDMMC D0 for the TF slot in 1-bit mode, confirmed from
+            the SZP schematic (page 1, TF interface: IO21_SD_DAT0).
+            D1-D3 are not wired to the ESP32 on this board (pull-ups
+            only), so the recorder always uses 1-bit mode.
 
 endmenu

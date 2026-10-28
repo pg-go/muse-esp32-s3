@@ -40,17 +40,16 @@
  * function below becomes a no-op. A write error mid-turn logs once, closes
  * that file, and the turn still goes to Muse.
  *
- * TF pins are NOT guessed. The Lichuang SZP vendor pages list the slot as
- * "1-SD mode" but give no SDMMC GPIO numbers, and no SZP TF pin table was
- * found in the repo or in a public search. The three pins are therefore
- * Kconfig (menuconfig: Muse -> WAV recording to TF card):
- *   CONFIG_MUSE_WAV_SD_CLK / CMD / D0
- * All three default to -1 (unconfigured). Until they are set to the real
- * PCB wiring, init() will report "not configured" and record nothing.
- * Changing only those three values, then rebuilding, is the whole
- * bring-up step once the schematic / pin table is confirmed. Do not
- * "fix" this by inventing pins: a wrong CLK/CMD/D0 can clash with the
- * LCD SPI (40/41), the I2S clocks (13/14/38) or the I2C bus (1/2).
+ * TF pins, confirmed from the SZP schematic (XD-ESP32S3-V1.0_1,
+ * page 1, TF interface, marked "1-SD mode"):
+ *   SD CLK = GPIO47 (IO47_SD_CLK), SD CMD = GPIO48 (IO48_SD_CMD),
+ *   SD D0  = GPIO21 (IO21_SD_DAT0).
+ * D1-D3 are not wired to the ESP32 (51k pull-ups only), so the
+ * recorder always uses SDMMC 1-bit mode. These are the Kconfig
+ * defaults (menuconfig: Muse -> WAV recording to TF card); setting
+ * any of them to -1 disables recording, and the other values are
+ * only for a different board revision. None of the three clashes
+ * with the SZP LCD (39/40/41/42), I2S (12/13/14/38/45) or I2C (1/2).
  *
  * Threading: init() runs on the app task at boot. Every other function
  * runs on the muse_chat session task only, so no lock is needed.

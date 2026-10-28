@@ -62,11 +62,13 @@ replies are captions, so a turn is user WAV + reply text. Presses under
 0.3 s are deleted, like "DIDN'T CATCH THAT". Recording is best-effort:
 a missing card, a mount failure, or a write error never breaks chat.
 
-Bring-up blocker, still open: the TF slot's SDMMC GPIO numbers are not
-in the vendor summary, this repo, or any public search found so far.
-The code therefore takes them from menuconfig (Muse -> WAV recording
-to TF card -> SD CLK/CMD/D0, all default -1 = disabled) and does not
-guess them. Until those three values are set to the real SZP wiring,
-boot logs "TF recording disabled: SD pins not configured" and no
-files are written. That log line, not a silent failure, is the signal
-that the pin table is still missing.
+TF wiring, confirmed 2026-10-28 from the SZP schematic
+(XD-ESP32S3-V1.0_1, page 1, TF interface, marked "1-SD mode"):
+SD CLK = GPIO47, SD CMD = GPIO48, SD D0 = GPIO21. D1-D3 are not
+wired to the ESP32 (51k pull-ups only), so the recorder always uses
+SDMMC 1-bit mode. These are the Kconfig defaults and are also set
+explicitly in sdkconfig.muse-lichuang-szp, so a preset build records
+without any menuconfig change. If boot instead logs "TF recording
+disabled: SD pins not configured", one of the three values was set
+to -1; if it logs a mount failure, the card, not the pins, is the
+first thing to check.
