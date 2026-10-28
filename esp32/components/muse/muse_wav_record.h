@@ -72,6 +72,16 @@ void muse_wav_record_init(void);
 /* True only after a successful mount. */
 bool muse_wav_record_available(void);
 
+/* Format the TF card to a fresh FAT filesystem (FAT12/16/32 by card
+ * size, never exFAT/NTFS: this FatFs build has FF_FS_EXFAT=0). This
+ * erases ALL data on the card, so it is never called at boot and never
+ * on a mount failure: only the serial console's explicit two-step
+ * tf.format / tf.format.confirm calls it. After success the card is
+ * mounted again with an empty /sdcard/muse and numbering restarts at
+ * muse_00001. Returns false (and leaves conversation untouched) if a
+ * turn is in progress, if no card is present, or if formatting fails. */
+bool muse_wav_record_format_card(void);
+
 /* Start a new turn's file set (increments the turn number). Does not
  * create any file yet: files are opened lazily on first write, so a
  * turn that is interrupted before any audio arrives leaves no files. */

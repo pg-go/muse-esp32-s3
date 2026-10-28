@@ -112,21 +112,19 @@ static void scan_next_turn(void)
     closedir(d);
 }
 
-void muse_wav_record_init(void)
+/* Mount once. format_if_failed=false is the boot path: a card that
+ * fails to mount is left alone, never wiped by surprise (it may hold
+ * photos, or be exFAT/NTFS, which this FatFs build cannot read).
+ * format_if_failed=true is only for the explicit format command below:
+ * on FR_NO_FILESYSTEM it runs f_mkfs (FM_ANY: FAT12/16/32 by card size,
+ * never exFAT, which FF_FS_EXFAT=0 disables) and mounts the result. */
+static esp_err_t mount_card(bool format_if_failed)
 {
-    if (s_mounted) {
-        return;
-    }
     int clk = CONFIG_MUSE_WAV_SD_CLK;
     int cmd = CONFIG_MUSE_WAV_SD_CMD;
     int d0 = CONFIG_MUSE_WAV_SD_D0;
     if (clk < 0 || cmd < 0 || d0 < 0) {
-        ESP_LOGW(TAG,
-                 "TF recording disabled: SD pins not configured "
-                 "(menuconfig: Muse -> WAV recording to TF card -> "
-                 "SD CLK/CMD/D0). Conversation is unaffected; set the "
-                 "real SZP TF wiring and rebuild to enable it.");
-        return;
+        return ESP_ERR_INVALID_ARG;
     }
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
     host.flags = SDMMC_HOST_FLAG_1BIT; /* vendor: TF slot is 1-SD mode */
@@ -140,27 +138,100 @@ void muse_wav_record_init(void)
     slot.d2 = GPIO_NUM_NC;
     slot.d3 = GPIO_NUM_NC;
     const esp_vfs_fat_mount_config_t mount_cfg = {
-        .format_if_mount_failed = false, /* never format a user's card */
+        .format_if_mount_failed = format_if_failed,
         .max_files = 3,
         .allocation_unit_size = 16 * 1024,
     };
-    esp_err_t err = esp_vfs_fat_sdmmc_mount(WAV_MOUNT, &host, &slot, &mount_cfg, &s_card);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "TF mount failed (%s): recording disabled, conversation unaffected",
-                 esp_err_to_name(err));
-        return;
-    }
+    s_card = NULL;
+    return esp_vfs_fat_sdmmc_mount(WAV_MOUNT, &host, &slot, &mount_cfg, &s_card);
+}
+
+static bool finish_mount(void)
+{
     /* mkdir is fine if the directory already exists. */
     if (mkdir(WAV_DIR, 0775) != 0 && errno != EEXIST) {
         ESP_LOGW(TAG, "cannot create %s: recording disabled", WAV_DIR);
         esp_vfs_fat_sdcard_unmount(WAV_MOUNT, s_card);
         s_card = NULL;
-        return;
+        return false;
     }
     scan_next_turn();
     s_mounted = true;
     ESP_LOGI(TAG, "TF mounted at %s, next turn %05u (SD 1-bit CLK %d CMD %d D0 %d)",
-             WAV_MOUNT, s_next_turn, clk, cmd, d0);
+             WAV_MOUNT, s_next_turn, CONFIG_MUSE_WAV_SD_CLK, CONFIG_MUSE_WAV_SD_CMD,
+             CONFIG_MUSE_WAV_SD_D0);
+    return true;
+}
+
+void muse_wav_record_init(void)
+{
+    if (s_mounted) {
+        return;
+    }
+    if (CONFIG_MUSE_WAV_SD_CLK < 0 || CONFIG_MUSE_WAV_SD_CMD < 0 || CONFIG_MUSE_WAV_SD_D0 < 0) {
+        ESP_LOGW(TAG,
+                 "TF recording disabled: SD pins not configured "
+                 "(menuconfig: Muse -> WAV recording to TF card -> "
+                 "SD CLK/CMD/D0). Conversation is unaffected; set the "
+                 "real SZP TF wiring and rebuild to enable it.");
+        return;
+    }
+    esp_err_t err = mount_card(false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "TF mount failed (%s): recording disabled, conversation unaffected",
+                 esp_err_to_name(err));
+        return;
+    }
+    (void)finish_mount();
+}
+
+/* Explicit, destructive, never automatic. Called only from the serial
+ * console's two-step tf.format / tf.format.confirm (see muse_input.c).
+ * After a successful format the card holds a fresh FAT filesystem and
+ * nothing else: /sdcard/muse is recreated empty, so numbering restarts
+ * at muse_00001. Refuses while a turn is in progress, so no recording
+ * is deleted mid-press. Do not press BOOT while this runs. */
+bool muse_wav_record_format_card(void)
+{
+    if (s_turn_active) {
+        ESP_LOGW(TAG, "TF format refused: a turn is in progress");
+        return false;
+    }
+    ESP_LOGW(TAG, "TF format: ALL data on the card will be erased, new FAT filesystem");
+    if (!s_mounted) {
+        /* Try a plain mount first: if the card already has a readable
+         * FAT (e.g. inserted after boot), that gives a card handle for
+         * the wipe below. Only if that fails (unformatted, exFAT, NTFS,
+         * corrupted) fall back to mount-with-format, which wipes it. */
+        if (mount_card(false) == ESP_OK) {
+            s_mounted = true;
+        } else if (mount_card(true) == ESP_OK) {
+            s_next_turn = 1;
+            if (finish_mount()) {
+                ESP_LOGI(TAG, "TF formatted to FAT (mount-time format), next turn 00001");
+                return true;
+            }
+            return false;
+        } else {
+            ESP_LOGW(TAG, "TF format failed: card absent, bad contact, or unreadable");
+            return false;
+        }
+    }
+    /* Mounted: esp_vfs_fat_sdcard_format wipes and mounts the card back. */
+    esp_err_t err = esp_vfs_fat_sdcard_format(WAV_MOUNT, s_card);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "TF format failed (%s)", esp_err_to_name(err));
+        /* The format API recycles resources if it cannot mount back. */
+        s_mounted = false;
+        s_card = NULL;
+        return false;
+    }
+    s_next_turn = 1;
+    if (!finish_mount()) {
+        return false;
+    }
+    ESP_LOGI(TAG, "TF formatted to FAT, all data erased, next turn 00001");
+    return true;
 }
 
 bool muse_wav_record_available(void)
@@ -385,6 +456,11 @@ void muse_wav_record_finish_reply(void)
 
 void muse_wav_record_cancel_turn(void)
 {
+}
+
+bool muse_wav_record_format_card(void)
+{
+    return false;
 }
 
 #endif /* CONFIG_MUSE_WAV_RECORD */
