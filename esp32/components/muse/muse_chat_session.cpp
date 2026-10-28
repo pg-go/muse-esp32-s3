@@ -69,6 +69,7 @@ extern "C" {
 #include "muse_account_api.h"
 #include "muse_link.h"
 #include "muse_settings.h"
+#include "muse_wav_record.h"
 #include "muse_wifi.h"
 }
 #include "muse_chat_priv.h"
@@ -963,6 +964,7 @@ static void turn_finish(void)
 
 static void turn_fail(const char *why)
 {
+    muse_wav_record_cancel_turn();
     ESP_LOGW(TAG, "turn failed: %s", why);
     if (s_turn.text) {
         muse_hatch_console("error", why, nullptr);
@@ -974,6 +976,15 @@ static void turn_fail(const char *why)
 /* Ends the turn once its reply is in; `complete` is false when it was cut off. */
 static void turn_done(bool complete)
 {
+    if (!s_turn.text && s_turn.texts) {
+        for (int i = 0; i < s_turn.nmsgs; i++) {
+            if (s_turn.msgs[i].len) {
+                muse_wav_record_append_reply_text(s_turn.texts + i * TEXT_MAX,
+                                                  s_turn.msgs[i].len);
+            }
+        }
+        muse_wav_record_finish_reply();
+    }
     if (s_turn.text) {
         muse_hatch_console("done", nullptr, "\"messages\":%d,\"complete\":%s", s_turn.nmsgs,
                            complete ? "true" : "false");
@@ -989,6 +1000,7 @@ static bool turn_start(uint32_t gen, bool text)
         if (s_turn.text) {
             turn_fail("INTERRUPTED");
         } else {
+            muse_wav_record_cancel_turn();
             turn_finish();
         }
     }
@@ -1018,6 +1030,7 @@ static void turn_begin(uint32_t gen)
     if (!turn_start(gen, false)) {
         return;
     }
+    muse_wav_record_begin_turn();
     if (VOICE_NOTE) {
         if (!open_note()) {
             disconnect("chat open failed");
@@ -1135,10 +1148,13 @@ static bool record_note(void)
         size_t room = NOTE_PART_BYTES - s_turn.note_len;
         size_t left = NOTE_MAX_BYTES - s_turn.pcm_bytes;
         room = (room < left ? room : left) & ~(size_t)1;
-        size_t got = room ? xStreamBufferReceive(s_in, s_turn.note + s_turn.note_len, room, 0) : 0;
+        const uint8_t *pcm = s_turn.note + s_turn.note_len;
+        size_t got = room ? xStreamBufferReceive(s_in, pcm, room, 0) : 0;
         if (!got) {
             break;
         }
+        /* Same bytes that go into the voice note, minus its WAV header. */
+        muse_wav_record_write_user(pcm, got);
         s_turn.note_len += got;
         s_turn.pcm_bytes += got;
         if (s_turn.note_len == NOTE_PART_BYTES && !send_note_part(false)) {
@@ -1151,12 +1167,14 @@ static bool record_note(void)
     mark(M_RELEASE);
     double secs = (double)s_turn.pcm_bytes / (MIC_RATE * 2);
     if (secs < 0.3) {
+        muse_wav_record_finish_user(false);
         turn_fail("DIDN'T CATCH THAT");   /* resets the half-sent request */
         return true;
     }
     if (!send_note_part(true)) {
         return false;
     }
+    muse_wav_record_finish_user(true);
     ESP_LOGI(TAG, "voice note: %.2fs, %u byte request", secs, (unsigned)s_turn.body_sent);
     mark(M_SENT);
     s_turn.chat_posted = true;
@@ -1531,6 +1549,12 @@ static void start_tts(void)
         m.tts = TTS_ACTIVE;
         s_turn.tts_msg = i;
         s_turn.silent = true;
+        /* Today replies are captions (silent=true), so this stays closed
+         * and only the .txt is archived. A future real TTS wiring sets
+         * silent=false here and the reply WAV opens instead. */
+        if (!s_turn.silent) {
+            muse_wav_record_begin_reply();
+        }
         ESP_LOGI(TAG, "showing message %s (%u chars)", m.id, (unsigned)m.len);
         show_reply_start(m);
         return;
@@ -1625,6 +1649,10 @@ static void decode(void)
         size_t n = resample(&s_turn.down, s_pcm, samples, s_pcm16);
         if (s_turn.gen == s_gen.load()) {
             mark(M_AUDIO);
+            /* Decoded reply, resampled to the same 16 kHz mono format
+             * as the user WAV. No-op while replies are captions. */
+            muse_wav_record_begin_reply();
+            muse_wav_record_write_reply(s_pcm16, n);
             xStreamBufferSend(s_out, s_pcm16, n * sizeof(int16_t), 0);
         }
         s_turn.pcm_out += n;
