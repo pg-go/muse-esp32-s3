@@ -43,6 +43,7 @@
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
+#include "driver/sdmmc_host.h"  /* sdmmc_slot_config_t, SDMMC_SLOT_CONFIG_DEFAULT */
 
 #if CONFIG_MUSE_WAV_RECORD
 

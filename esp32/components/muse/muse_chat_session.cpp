@@ -1148,7 +1148,7 @@ static bool record_note(void)
         size_t room = NOTE_PART_BYTES - s_turn.note_len;
         size_t left = NOTE_MAX_BYTES - s_turn.pcm_bytes;
         room = (room < left ? room : left) & ~(size_t)1;
-        const uint8_t *pcm = s_turn.note + s_turn.note_len;
+        uint8_t *pcm = s_turn.note + s_turn.note_len;
         size_t got = room ? xStreamBufferReceive(s_in, pcm, room, 0) : 0;
         if (!got) {
             break;
