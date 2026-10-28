@@ -203,4 +203,46 @@ menu "Muse"
             them. Needs PSRAM. Without it, voice notes go over Home Link's own
             session to its paired VM and replies are shown as text.
 
+    config MUSE_WAV_RECORD
+        bool "WAV recording to TF card (T1: pg-go fork)"
+        depends on MUSE_ENABLED
+        default y if MUSE_BOARD_LICHUANG_SZP
+        default n
+        help
+            Record each push-to-talk turn to the TF card as
+            16 kHz, 16-bit, mono WAV (the voice note's own format),
+            plus the reply text. See muse_wav_record.h. Recording is
+            best-effort: without a mounted card, conversation still
+            works. The reply WAV only appears once a real TTS
+            implementation feeds decoded audio; today replies are
+            captions, so a turn archives as user WAV + reply text.
+
+    config MUSE_WAV_SD_CLK
+        int "WAV recording: TF card SDMMC clock GPIO"
+        depends on MUSE_WAV_RECORD
+        range -1 48
+        default -1
+        help
+            SDMMC CLK for the TF slot in 1-bit mode. -1 means
+            "not configured": recording stays disabled. Set this
+            only to the SZP board's real TF wiring, once it is
+            confirmed from the schematic / pin table. Do not guess:
+            a wrong pin can clash with the LCD or audio clocks.
+
+    config MUSE_WAV_SD_CMD
+        int "WAV recording: TF card SDMMC command GPIO"
+        depends on MUSE_WAV_RECORD
+        range -1 48
+        default -1
+        help
+            SDMMC CMD for the TF slot in 1-bit mode. See SD_CLK.
+
+    config MUSE_WAV_SD_D0
+        int "WAV recording: TF card SDMMC data 0 GPIO"
+        depends on MUSE_WAV_RECORD
+        range -1 48
+        default -1
+        help
+            SDMMC D0 for the TF slot in 1-bit mode. See SD_CLK.
+
 endmenu

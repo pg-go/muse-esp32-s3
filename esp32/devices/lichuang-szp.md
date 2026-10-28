@@ -51,3 +51,22 @@ This is UI localization, not a Chinese input method. SSIDs, passwords and
 chat replies retain their original text. Both languages were checked with
 on-device snapshots, and persistence was checked with a hardware reset.
 The shared UI also builds for FNK0104B with the default English configuration.
+
+## WAV recording to TF card (T1 branch)
+
+Each push-to-talk turn archives to the TF card under `/sdcard/muse/`:
+`muse_NNNNN_user.wav` (16 kHz, 16-bit, mono PCM, the voice note's own
+format), `muse_NNNNN_reply.txt` (Muse's reply text). `muse_NNNNN_reply.wav`
+only appears once a real TTS implementation feeds decoded audio; today
+replies are captions, so a turn is user WAV + reply text. Presses under
+0.3 s are deleted, like "DIDN'T CATCH THAT". Recording is best-effort:
+a missing card, a mount failure, or a write error never breaks chat.
+
+Bring-up blocker, still open: the TF slot's SDMMC GPIO numbers are not
+in the vendor summary, this repo, or any public search found so far.
+The code therefore takes them from menuconfig (Muse -> WAV recording
+to TF card -> SD CLK/CMD/D0, all default -1 = disabled) and does not
+guess them. Until those three values are set to the real SZP wiring,
+boot logs "TF recording disabled: SD pins not configured" and no
+files are written. That log line, not a silent failure, is the signal
+that the pin table is still missing.
