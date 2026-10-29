@@ -33,6 +33,7 @@
  */
 
 #include "muse_wav_record.h"
+#include "muse_log_file.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -139,7 +140,7 @@ static esp_err_t mount_card(bool format_if_failed)
     slot.d3 = GPIO_NUM_NC;
     const esp_vfs_fat_mount_config_t mount_cfg = {
         .format_if_mount_failed = format_if_failed,
-        .max_files = 3,
+        .max_files = 5, /* WAV files + the TF boot log file */
         .allocation_unit_size = 16 * 1024,
     };
     s_card = NULL;
@@ -157,6 +158,9 @@ static bool finish_mount(void)
     }
     scan_next_turn();
     s_mounted = true;
+    /* TF boot log: now that the card is mounted, open log.txt
+     * and flush the pre-mount ring buffer into it. */
+    muse_log_file_start();
     ESP_LOGI(TAG, "TF mounted at %s, next turn %05u (SD 1-bit CLK %d CMD %d D0 %d)",
              WAV_MOUNT, s_next_turn, CONFIG_MUSE_WAV_SD_CLK, CONFIG_MUSE_WAV_SD_CMD,
              CONFIG_MUSE_WAV_SD_D0);

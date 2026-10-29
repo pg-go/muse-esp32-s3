@@ -49,7 +49,7 @@ if(CONFIG_MUSE_ENABLED)
     else()
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
     endif()
-    list(APPEND srcs "muse_chat_text.c" "muse_wav_record.c")
+    list(APPEND srcs "muse_chat_text.c" "muse_wav_record.c" "muse_log_file.c")
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
     endif()
