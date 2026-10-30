@@ -52,6 +52,7 @@ if(CONFIG_MUSE_ENABLED)
     list(APPEND srcs "muse_chat_text.c" "muse_wav_record.c" "muse_log_file.c")
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
+        list(APPEND srcs "fonts/muse_font_noto_sc_20.c")   # chat bubbles: Noto Sans CJK SC 20 px, common chars
     endif()
     # Your own character (tools/muse/AVATAR_RECIPE.md) stands in for the default
     # avatar when avatar/muse_pixel.c exists here; this avatar/ is gitignored. The

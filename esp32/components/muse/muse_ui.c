@@ -119,6 +119,21 @@ static lv_obj_t *s_name_lbl;    /* this gadget's own name, to tell it from the n
 static lv_obj_t *s_power_lbl;
 static lv_obj_t *s_caption_lbl;
 static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
+
+/* Chat page (T1-ui): a full-screen bubble list, separate from the face, so a
+ * long reply is never squeezed under Muse or cut to two lines. */
+#define CHAT_MAX_MSGS 20
+#define CHAT_STATUS_H 28
+static lv_obj_t *s_chat;            /* overlay on the screen, hidden unless chatting */
+static lv_obj_t *s_chat_status_lbl;
+static lv_obj_t *s_chat_content;    /* vertical-scroll bubble list */
+static int s_chat_next_y;
+static lv_obj_t *s_chat_user_lbl;   /* this turn's user bubble label, for its duration */
+static lv_obj_t *s_chat_live_lbl;   /* this turn's live assistant bubble label, replaced by full text */
+static bool s_chat_open;
+static bool s_chat_turn_active;
+static bool s_chat_full_added;
+static int64_t s_chat_listen_start_us;
 static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
@@ -516,6 +531,244 @@ static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t co
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(l, "");
     return l;
+}
+
+/* Chat bubbles only: Montserrat 20 for Latin, Noto Sans CJK SC 20 px (4 bpp,
+ * antialiased, common chars) for Chinese, Unifont 16 for the rest. The face
+ * and settings keep their old fonts, so no existing layout moves. */
+#if CONFIG_MUSE_CJK_FONT
+LV_FONT_DECLARE(muse_font_noto_sc_20)
+#endif
+static const lv_font_t *chat_font(void)
+{
+#if CONFIG_MUSE_CJK_FONT
+    static lv_font_t font, noto;
+    if (!font.get_glyph_dsc) {
+        noto = muse_font_noto_sc_20;
+        noto.fallback = &muse_font_cjk_16;
+        font = lv_font_montserrat_20;
+        font.fallback = &noto;
+        font.line_height = LV_MAX(lv_font_montserrat_20.line_height, 20);
+    }
+    return &font;
+#else
+    return &lv_font_montserrat_20;
+#endif
+}
+
+static void chat_open(void);
+static void chat_close(void);
+
+/* Size a bubble to its label: natural width first, clamped to 85% of the
+ * screen, then wrapped to that width. Returns the bubble's height. */
+static int chat_size_bubble(lv_obj_t *bubble, lv_obj_t *lbl)
+{
+    int max_w = s_w * 85 / 100 - 16;
+    lv_obj_set_width(lbl, LV_SIZE_CONTENT);
+    lv_obj_update_layout(lbl);
+    int text_w = lv_obj_get_width(lbl);
+    int bubble_w = (text_w < max_w ? text_w : max_w) + 16;
+    lv_obj_set_width(lbl, bubble_w - 16);
+    lv_obj_set_width(bubble, bubble_w);
+    lv_obj_set_height(bubble, LV_SIZE_CONTENT);
+    lv_obj_update_layout(bubble);
+    return lv_obj_get_height(bubble);
+}
+
+static void chat_relayout(void)
+{
+    int y = 8;
+    for (uint32_t i = 0; i < lv_obj_get_child_count(s_chat_content); i++) {
+        lv_obj_t *bubble = lv_obj_get_child(s_chat_content, i);
+        bool user = (int)(intptr_t)lv_obj_get_user_data(bubble) != 0;
+        int x = user ? s_w - lv_obj_get_width(bubble) - 8 : 8;
+        lv_obj_set_pos(bubble, x, y);
+        y += lv_obj_get_height(bubble) + 8;
+    }
+    s_chat_next_y = y;
+}
+
+static void chat_scroll_to_last(void)
+{
+    uint32_t n = lv_obj_get_child_count(s_chat_content);
+    if (n) {
+        lv_obj_scroll_to_view_recursive(lv_obj_get_child(s_chat_content, n - 1), LV_ANIM_ON);
+    }
+}
+
+static void chat_clear_stale_labels(lv_obj_t *bubble)
+{
+    lv_obj_t *lbl = lv_obj_get_child_count(bubble) ? lv_obj_get_child(bubble, 0) : NULL;
+    if (lbl && lbl == s_chat_user_lbl) {
+        s_chat_user_lbl = NULL;
+    }
+    if (lbl && lbl == s_chat_live_lbl) {
+        s_chat_live_lbl = NULL;
+    }
+}
+
+/* One bubble, right (user, green) or left (assistant, grey). Returns its label. */
+static lv_obj_t *chat_add_bubble(bool user, const char *text)
+{
+    if (!s_chat_content) {
+        return NULL;
+    }
+    while (lv_obj_get_child_count(s_chat_content) >= CHAT_MAX_MSGS) {
+        lv_obj_t *first = lv_obj_get_child(s_chat_content, 0);
+        chat_clear_stale_labels(first);
+        lv_obj_del(first);
+    }
+    lv_obj_t *bubble = lv_obj_create(s_chat_content);
+    lv_obj_remove_style_all(bubble);
+    lv_obj_set_style_radius(bubble, 8, 0);
+    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(bubble, lv_color_hex(user ? 0x1e8e3e : 0x33304a), 0);
+    lv_obj_set_style_pad_all(bubble, 8, 0);
+    lv_obj_remove_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_set_user_data(bubble, (void *)(intptr_t)(user ? 1 : 0));
+    lv_obj_t *lbl = lv_label_create(bubble);
+    lv_obj_set_style_text_font(lbl, chat_font(), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_line_space(lbl, 2, 0);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lbl, text);
+    chat_size_bubble(bubble, lbl);
+    chat_relayout();
+    chat_scroll_to_last();
+    return lbl;
+}
+
+static void chat_update_bubble_text(lv_obj_t *lbl, const char *text)
+{
+    if (!lbl) {
+        return;
+    }
+    lv_obj_t *bubble = lv_obj_get_parent(lbl);
+    lv_label_set_text(lbl, text);
+    chat_size_bubble(bubble, lbl);
+    chat_relayout();
+    chat_scroll_to_last();
+}
+
+static void chat_open(void)
+{
+    if (!s_chat || s_chat_open) {
+        return;
+    }
+    lv_obj_remove_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+    s_chat_open = true;
+}
+
+static void chat_close(void)
+{
+    if (!s_chat || !s_chat_open) {
+        return;
+    }
+    lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+    s_chat_open = false;
+}
+
+static void on_chat_close_clicked(lv_event_t *e)
+{
+    (void)e;
+    chat_close();
+}
+
+static void chat_set_status(muse_mode_t mode)
+{
+    if (!s_chat_status_lbl) {
+        return;
+    }
+    const char *name;
+    switch (mode) {
+    case MUSE_MODE_LISTENING: name = muse_tr("LISTENING"); break;
+    case MUSE_MODE_THINKING: name = muse_tr("THINKING"); break;
+    case MUSE_MODE_SPEAKING: name = muse_tr("SPEAKING"); break;
+    case MUSE_MODE_ERROR: name = muse_tr("ERROR"); break;
+    default: name = muse_tr("READY"); break;
+    }
+    if (strcmp(name, lv_label_get_text(s_chat_status_lbl)) != 0) {
+        lv_label_set_text(s_chat_status_lbl, name);
+    }
+}
+
+/* A press starts a turn: open the page with a user bubble, duration filled
+ * in when the recording ends. */
+static void chat_turn_start(void)
+{
+    s_chat_turn_active = true;
+    s_chat_full_added = false;
+    s_chat_live_lbl = NULL;
+    s_chat_listen_start_us = esp_timer_get_time();
+    chat_open();
+    s_chat_user_lbl = chat_add_bubble(true, "语音录音中…");
+}
+
+/* The recording just ended: the user bubble becomes "语音 5.3秒". */
+static void chat_listen_end(void)
+{
+    if (!s_chat_user_lbl) {
+        return;
+    }
+    char buf[32];
+    double secs = (double)(esp_timer_get_time() - s_chat_listen_start_us) / 1e6;
+    snprintf(buf, sizeof(buf), "语音 %.1f秒", secs);
+    chat_update_bubble_text(s_chat_user_lbl, buf);
+}
+
+/* The turn just ended: replace the live page bubble with the reply's full
+ * messages, one bubble each. No-ops if the turn already did this. */
+static void chat_turn_finish(void)
+{
+    if (!s_chat_content) {
+        return;
+    }
+    if (!s_chat_turn_active) {
+        /* A saved note's reply, with no press in this session: still show it. */
+        s_chat_turn_active = true;
+        s_chat_full_added = false;
+    }
+    if (s_chat_full_added) {
+        return;
+    }
+    s_chat_full_added = true;
+    int count = muse_hatch_turn_message_count();
+    if (count <= 0) {
+        return;
+    }
+    chat_open();
+    static char text[1024];
+    for (int i = 0; i < count; i++) {
+        if (!muse_hatch_turn_message_text(i, text, sizeof(text))) {
+            continue;
+        }
+        if (i == 0 && s_chat_live_lbl) {
+            chat_update_bubble_text(s_chat_live_lbl, text);
+            s_chat_live_lbl = NULL;
+        } else {
+            chat_add_bubble(false, text);
+        }
+    }
+}
+
+/* While a reply is arriving, show its current page in one live bubble. */
+static void chat_live_caption(const char *caption)
+{
+    if (!s_chat_content || !caption[0] || caption[0] == '"') {
+        return;   /* quoted captions are the note's echo, not the reply */
+    }
+    if (!strcmp(caption, muse_tr("SENDING VOICE NOTE")) ||
+        !strcmp(caption, muse_tr("NOTE SENT - WAITING FOR MUSE")) ||
+        !strcmp(caption, muse_tr("SENDING SAVED NOTE")) ||
+        !strcmp(caption, muse_tr("SAVED NOTE SENT"))) {
+        return;
+    }
+    if (s_chat_live_lbl) {
+        chat_update_bubble_text(s_chat_live_lbl, caption);
+    } else {
+        s_chat_live_lbl = chat_add_bubble(false, caption);
+    }
 }
 
 static void show_speaker(bool on)
@@ -1124,6 +1377,47 @@ static void build_overlays(void)
         s_dots[i] = d;
     }
 
+    /* Chat page: a full-screen overlay, hidden until a turn. The status bar
+     * (tap it, or its 返回 button, to go back to the face) sits above a
+     * vertical-scroll bubble list; the face and its avatar stay underneath. */
+    s_chat = lv_obj_create(scr);
+    lv_obj_remove_style_all(s_chat);
+    lv_obj_set_size(s_chat, s_w, s_h);
+    lv_obj_set_style_bg_color(s_chat, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_chat, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_chat, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+    {
+        lv_obj_t *bar = lv_obj_create(s_chat);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_size(bar, s_w, CHAT_STATUS_H);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(0x1a1530), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(bar, on_chat_close_clicked, LV_EVENT_CLICKED, NULL);
+        s_chat_status_lbl = lv_label_create(bar);
+        lv_obj_set_style_text_font(s_chat_status_lbl, chat_font(), 0);
+        lv_obj_set_style_text_color(s_chat_status_lbl, lv_color_hex(0xffffff), 0);
+        lv_label_set_text(s_chat_status_lbl, "");
+        lv_obj_align(s_chat_status_lbl, LV_ALIGN_LEFT_MID, 8, 0);
+        lv_obj_t *close = lv_label_create(bar);
+        lv_obj_set_style_text_font(close, chat_font(), 0);
+        lv_obj_set_style_text_color(close, lv_color_hex(0xa77dff), 0);
+        lv_label_set_text(close, "返回");
+        lv_obj_add_flag(close, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(close, on_chat_close_clicked, LV_EVENT_CLICKED, NULL);
+        lv_obj_align(close, LV_ALIGN_RIGHT_MID, -8, 0);
+    }
+    s_chat_content = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(s_chat_content);
+    lv_obj_set_size(s_chat_content, s_w, s_h - CHAT_STATUS_H);
+    lv_obj_set_pos(s_chat_content, 0, CHAT_STATUS_H);
+    lv_obj_set_style_bg_color(s_chat_content, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_chat_content, LV_OPA_COVER, 0);
+    lv_obj_set_scrollbar_mode(s_chat_content, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(s_chat_content, LV_DIR_VER);
+    lv_obj_add_flag(s_chat_content, LV_OBJ_FLAG_SCROLLABLE);
+    s_chat_next_y = 8;
+
     /* A downloaded image: over everything on the screen (and in snapshots),
      * under the pairing code and sleep cover on the top layer. */
     s_image = lv_image_create(scr);
@@ -1532,6 +1826,9 @@ static void update_status(muse_mode_t mode, float now)
         if (s_reply_lbl) {
             lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
         }
+        if (s_chat_open && (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING)) {
+            chat_live_caption(caption);
+        }
     }
     update_power(now);
 }
@@ -1604,10 +1901,19 @@ static void frame_tick(lv_timer_t *timer)
     float now = (float)esp_timer_get_time() / 1e6f;
 
     if (mode != s_last_mode) {
+        if (s_last_mode == MUSE_MODE_LISTENING && mode != MUSE_MODE_LISTENING) {
+            chat_listen_end();
+        }
         if (mode == MUSE_MODE_LISTENING) {
             image_hide_locked();
             muse_ui_show_face();
+            chat_turn_start();
+        } else if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
+            chat_open();
+        } else if (mode == MUSE_MODE_IDLE && s_last_mode != MUSE_MODE_COUNT) {
+            chat_turn_finish();
         }
+        chat_set_status(mode);
         s_last_mode = mode;
     }
     if (update_sleep()) {

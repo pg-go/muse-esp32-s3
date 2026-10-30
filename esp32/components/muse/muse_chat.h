@@ -106,6 +106,15 @@ muse_hatch_ev_t muse_hatch_turn_event(char *text, size_t cap);
  */
 bool muse_hatch_turn_caption(size_t played, char *out, size_t cap);
 
+/*
+ * The current turn's reply messages, for the chat page: count, then one
+ * message's full text (not a page). False for a missing message or an empty
+ * one. The turn's texts stay put until the next turn starts, so the UI reads
+ * them on the turn's last frame, not while the reply is still arriving.
+ */
+int muse_hatch_turn_message_count(void);
+bool muse_hatch_turn_message_text(int index, char *out, size_t cap);
+
 /* Reply speech as 16 kHz mono. Waits up to wait_ms for some; returns frames read. */
 size_t muse_hatch_turn_read(int16_t *pcm, size_t frames, int wait_ms);
 

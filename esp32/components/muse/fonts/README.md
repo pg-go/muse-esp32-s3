@@ -11,3 +11,10 @@ GNU Unifont is by Roman Czyborra, Paul Hardy and contributors
 SIL Open Font License, version 1.1 (https://openfontlicense.org), and under
 the GNU GPL version 2 or later with the GNU font embedding exception. This
 file is a conversion of an unaltered subset of the font.
+
+`muse_font_noto_sc_20.c` is the chat page's Chinese font only, also built in
+with `CONFIG_MUSE_CJK_FONT`. It holds Noto Sans CJK SC at 20 px, 4 bpp, for
+CJK punctuation, kana, fullwidth forms and the GB2312 level-1 common
+characters (3755): about 430 KB of bitmaps. Characters outside that set fall
+back to `muse_font_cjk_16` at runtime. `tools/muse/gen_noto_sc_chat_font.sh`
+regenerates it. Noto Sans CJK is by Google (SIL Open Font License 1.1).
