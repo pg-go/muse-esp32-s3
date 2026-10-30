@@ -49,7 +49,7 @@ sys.stdout.write(''.join(chars))
 ")"
 
 npx -y lv_font_conv@1.5.3 --font "$TMP/NotoSansCJKsc-Regular.otf" --size 20 --bpp 4 \
-    --format lvgl --lv-font-name muse_font_noto_sc_20 --no-kerning \
+    --format lvgl --lv-font-name muse_font_noto_sc_20 --no-kerning --no-compress \
     -r 0x3000-0x30FF -r 0xFF00-0xFFEF --symbols "$SYMBOLS" -o "$TMP/font.c"
 # The project includes LVGL as "lvgl.h"; the header names no temp paths.
 sed -e 's|#include "lvgl/lvgl.h"|#include "lvgl.h"|' -e "s|$TMP/||g" "$TMP/font.c" > "$OUT"
