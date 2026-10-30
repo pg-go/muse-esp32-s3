@@ -1465,13 +1465,17 @@ static void build_overlays(void)
      * vertical-scroll bubble list. */
     s_chat = s_chat_tile ? s_chat_tile : lv_obj_create(scr);
     lv_obj_remove_style_all(s_chat);
+    /* remove_style_all also clears the LV_PCT(100) size tileview gave the
+     * tile, leaving it at LVGL's 130x130 default, which tileview then
+     * snap-centres and clips every child to. That was the 144e185/eb5fd03
+     * small centred card: bar, list and bubbles were sized correctly
+     * (272/256) but only the 130x130 window showed. Restore full size
+     * unconditionally, for the tile and the overlay alike. */
+    lv_obj_set_size(s_chat, s_w, s_h);
     if (!s_chat_tile) {
-        lv_obj_set_size(s_chat, s_w, s_h);
         lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
     }
-    /* No layout on the tile itself: its children are placed by hand, and
-     * any layout that survived here is what shrank the bar and bubbles
-     * into a small centred card on the 144e185 build. */
+    /* No layout on the tile itself: its children are placed by hand. */
     lv_obj_set_layout(s_chat, LV_LAYOUT_NONE);
     lv_obj_set_style_bg_color(s_chat, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_chat, LV_OPA_COVER, 0);
