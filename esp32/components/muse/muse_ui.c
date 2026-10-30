@@ -551,7 +551,10 @@ static const lv_font_t *chat_font(void)
         noto.fallback = &muse_font_cjk_16;
         font = lv_font_montserrat_20;
         font.fallback = &noto;
-        font.line_height = LV_MAX(lv_font_montserrat_20.line_height, 20);
+        /* Montserrat 20 alone is 22 px/line, which clips the bottom of
+         * CJK glyphs (Noto's own line height is 38). Give every chat
+         * line 28 px so a two-line bubble is never cut at its bottom. */
+        font.line_height = 28;
     }
     return &font;
 #else
@@ -574,25 +577,47 @@ static int chat_size_bubble(lv_obj_t *bubble, lv_obj_t *lbl)
     lv_obj_set_width(lbl, bubble_w - 16);
     /* Re-layout the label at its wrapped width before sizing the bubble:
      * without this, a multi-line label keeps its single-line height, the
-     * bubble is too short, and the text spills into the next bubble. */
+     * bubble is too short, and the text spills into the next bubble.
+     * Set the height explicitly from the label instead of SIZE_CONTENT,
+     * so a flex parent cannot shrink it back to one line. */
     lv_obj_update_layout(lbl);
     lv_obj_set_width(bubble, bubble_w);
-    lv_obj_set_height(bubble, LV_SIZE_CONTENT);
+    lv_obj_set_height(bubble, lv_obj_get_height(lbl) + 16);
     lv_obj_update_layout(bubble);
+    /* Keep the wrapper (the bubble's parent, when present) in step. */
+    lv_obj_t *wrap = lv_obj_get_parent(bubble);
+    if (wrap && wrap != s_chat_content) {
+        lv_obj_set_height(wrap, lv_obj_get_height(bubble));
+    }
     return lv_obj_get_height(bubble);
 }
 
+/* The bubble list is a flex column (see build_overlays): wrappers stack
+ * on their own, so relayout only has to put each bubble left (assistant)
+ * or right (user) inside its full-width wrapper. Manual y positions are
+ * gone: they were the thing that let a tile layout move bubbles to the
+ * middle of the screen instead of the edges. */
 static void chat_relayout(void)
 {
-    int y = 8;
-    for (uint32_t i = 0; i < lv_obj_get_child_count(s_chat_content); i++) {
-        lv_obj_t *bubble = lv_obj_get_child(s_chat_content, i);
-        bool user = (int)(intptr_t)lv_obj_get_user_data(bubble) != 0;
-        int x = user ? s_w - lv_obj_get_width(bubble) - 8 : 8;
-        lv_obj_set_pos(bubble, x, y);
-        y += lv_obj_get_height(bubble) + 8;
+    if (!s_chat_content) {
+        return;
     }
-    s_chat_next_y = y;
+    int wrap_w = lv_obj_get_content_width(s_chat_content);
+    if (wrap_w <= 0) {
+        wrap_w = s_w - 16;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(s_chat_content); i++) {
+        lv_obj_t *wrap = lv_obj_get_child(s_chat_content, i);
+        if (!lv_obj_get_child_count(wrap)) {
+            continue;
+        }
+        lv_obj_t *bubble = lv_obj_get_child(wrap, 0);
+        bool user = (int)(intptr_t)lv_obj_get_user_data(bubble) != 0;
+        int x = user ? wrap_w - lv_obj_get_width(bubble) : 0;
+        lv_obj_set_pos(bubble, x, 0);
+        lv_obj_set_size(wrap, wrap_w, lv_obj_get_height(bubble));
+    }
+    s_chat_next_y = 0;
 }
 
 static void chat_scroll_to_last(void)
@@ -603,9 +628,10 @@ static void chat_scroll_to_last(void)
     }
 }
 
-static void chat_clear_stale_labels(lv_obj_t *bubble)
+static void chat_clear_stale_labels(lv_obj_t *wrap)
 {
-    lv_obj_t *lbl = lv_obj_get_child_count(bubble) ? lv_obj_get_child(bubble, 0) : NULL;
+    lv_obj_t *bubble = lv_obj_get_child_count(wrap) ? lv_obj_get_child(wrap, 0) : NULL;
+    lv_obj_t *lbl = bubble && lv_obj_get_child_count(bubble) ? lv_obj_get_child(bubble, 0) : NULL;
     if (lbl && lbl == s_chat_user_lbl) {
         s_chat_user_lbl = NULL;
     }
@@ -614,7 +640,11 @@ static void chat_clear_stale_labels(lv_obj_t *bubble)
     }
 }
 
-/* One bubble, right (user, green) or left (assistant, grey). Returns its label. */
+/* One bubble, right (user, green) or left (assistant, grey). Returns its label.
+ * Each bubble lives in its own full-width transparent wrapper, exactly
+ * like Xiaozhi's chat page: the wrapper is the flex item, the bubble is
+ * positioned left/right inside it, so the list always fills the screen
+ * width instead of collapsing to a small centred card. */
 static lv_obj_t *chat_add_bubble(bool user, const char *text)
 {
     if (!s_chat_content) {
@@ -625,18 +655,24 @@ static lv_obj_t *chat_add_bubble(bool user, const char *text)
         chat_clear_stale_labels(first);
         lv_obj_del(first);
     }
-    lv_obj_t *bubble = lv_obj_create(s_chat_content);
+    lv_obj_t *wrap = lv_obj_create(s_chat_content);
+    lv_obj_remove_style_all(wrap);
+    lv_obj_set_size(wrap, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *bubble = lv_obj_create(wrap);
     lv_obj_remove_style_all(bubble);
     lv_obj_set_style_radius(bubble, 8, 0);
     lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_color(bubble, lv_color_hex(user ? 0x1e8e3e : 0x33304a), 0);
     lv_obj_set_style_pad_all(bubble, 8, 0);
     lv_obj_remove_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(bubble, LV_OBJ_FLAG_FLOATING);
     lv_obj_set_user_data(bubble, (void *)(intptr_t)(user ? 1 : 0));
     lv_obj_t *lbl = lv_label_create(bubble);
     lv_obj_set_style_text_font(lbl, chat_font(), 0);
     lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
-    lv_obj_set_style_text_line_space(lbl, 2, 0);
+    lv_obj_set_style_text_line_space(lbl, 4, 0);
     lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);
     lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
     lv_label_set_text(lbl, text);
@@ -767,9 +803,10 @@ static void chat_turn_finish(void)
     if (!s_chat_live_lbl) {
         uint32_t n = lv_obj_get_child_count(s_chat_content);
         if (n) {
-            lv_obj_t *last = lv_obj_get_child(s_chat_content, n - 1);
-            bool last_user = (int)(intptr_t)lv_obj_get_user_data(last) != 0;
-            lv_obj_t *last_lbl = lv_obj_get_child_count(last) ? lv_obj_get_child(last, 0) : NULL;
+            lv_obj_t *last_wrap = lv_obj_get_child(s_chat_content, n - 1);
+            lv_obj_t *last = lv_obj_get_child_count(last_wrap) ? lv_obj_get_child(last_wrap, 0) : NULL;
+            bool last_user = last && (int)(intptr_t)lv_obj_get_user_data(last) != 0;
+            lv_obj_t *last_lbl = last && lv_obj_get_child_count(last) ? lv_obj_get_child(last, 0) : NULL;
             if (!last_user && last_lbl && !strcmp(lv_label_get_text(last_lbl), text)) {
                 return;
             }
@@ -1432,6 +1469,10 @@ static void build_overlays(void)
         lv_obj_set_size(s_chat, s_w, s_h);
         lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
     }
+    /* No layout on the tile itself: its children are placed by hand, and
+     * any layout that survived here is what shrank the bar and bubbles
+     * into a small centred card on the 144e185 build. */
+    lv_obj_set_layout(s_chat, LV_LAYOUT_NONE);
     lv_obj_set_style_bg_color(s_chat, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_chat, LV_OPA_COVER, 0);
     lv_obj_remove_flag(s_chat, LV_OBJ_FLAG_SCROLLABLE);
@@ -1439,6 +1480,8 @@ static void build_overlays(void)
         lv_obj_t *bar = lv_obj_create(s_chat);
         lv_obj_remove_style_all(bar);
         lv_obj_set_size(bar, s_w, CHAT_STATUS_H);
+        lv_obj_set_pos(bar, 0, 0);
+        lv_obj_add_flag(bar, LV_OBJ_FLAG_FLOATING);
         lv_obj_set_style_bg_color(bar, lv_color_hex(0x1a1530), 0);
         lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
         lv_obj_add_event_cb(bar, on_chat_close_clicked, LV_EVENT_CLICKED, NULL);
@@ -1459,11 +1502,20 @@ static void build_overlays(void)
     lv_obj_remove_style_all(s_chat_content);
     lv_obj_set_size(s_chat_content, s_w, s_h - CHAT_STATUS_H);
     lv_obj_set_pos(s_chat_content, 0, CHAT_STATUS_H);
+    lv_obj_add_flag(s_chat_content, LV_OBJ_FLAG_FLOATING);
     lv_obj_set_style_bg_color(s_chat_content, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(s_chat_content, LV_OPA_COVER, 0);
     lv_obj_set_scrollbar_mode(s_chat_content, LV_SCROLLBAR_MODE_OFF);
     lv_obj_set_scroll_dir(s_chat_content, LV_DIR_VER);
     lv_obj_add_flag(s_chat_content, LV_OBJ_FLAG_SCROLLABLE);
+    /* Flex column, like Xiaozhi's chat page: wrappers stack full-width
+     * and the list fills the whole tile, instead of manual y positions
+     * that a parent layout could override. */
+    lv_obj_set_layout(s_chat_content, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(s_chat_content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_chat_content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(s_chat_content, 8, 0);
+    lv_obj_set_style_pad_gap(s_chat_content, 8, 0);
     s_chat_next_y = 8;
 
     /* A downloaded image: over everything on the screen (and in snapshots),
