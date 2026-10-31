@@ -127,7 +127,12 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, 
 {
     char shown[SHOWN_MAX];
     lv_obj_t *l = lv_label_create(parent);
-    if (s_compact && font == &lv_font_montserrat_20) font = &lv_font_montserrat_16;
+    /* On a narrow compact screen, 20 px titles do not fit, so they drop
+     * to 16 px. On a 320 px wide screen they fit, and keeping 20 px puts
+     * settings titles on the same clear chat font as the bubbles. */
+    if (s_compact && font == &lv_font_montserrat_20 && muse_board->width < 320) {
+        font = &lv_font_montserrat_16;
+    }
     lv_obj_set_style_text_font(l, muse_ui_font(font), 0);
     lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
     lv_label_set_text(l, muse_text_showable(text, shown, sizeof(shown)));
@@ -550,7 +555,16 @@ static void build_text_page(lv_obj_t *tile)
 
     const lv_font_t *font = s_text_compact ? &lv_font_montserrat_16 : &lv_font_montserrat_20;
     int h = s_text_compact ? 34 : text_px(48), border = 2;
-    int pad = (h - 2 * border - lv_font_get_line_height(font)) / 2;
+    /* Pad against the font that is actually used (muse_ui_font raises the
+     * line height to 28 on 320 px screens for the Noto glyphs); if the
+     * field would be too short for it, grow the field instead of
+     * clipping the text. */
+    int used_line = lv_font_get_line_height(muse_ui_font(font));
+    int pad = (h - 2 * border - used_line) / 2;
+    if (pad < 2) {
+        h = used_line + 2 * border + 4;
+        pad = 2;
+    }
     s_text_ta = lv_textarea_create(s_text);
     lv_textarea_set_one_line(s_text_ta, true);
     lv_obj_set_size(s_text_ta, text_px(300), h);

@@ -486,6 +486,15 @@ static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compac
 LV_FONT_DECLARE(muse_font_cjk_16)
 #endif
 
+static const lv_font_t *chat_font(void);
+
+/* Every other interface uses the chat font for Chinese: on a 320 px or
+ * wider screen, fall back to the chat font (Montserrat 20 + Noto Sans CJK
+ * SC 20 px, 4 bpp antialiased) instead of Unifont 16 (1 bpp, no
+ * antialiasing), which is what made settings/face Chinese look unclear.
+ * Line height is raised to 28 so Noto glyphs are not clipped at the
+ * bottom, as in the chat bubbles. Smaller screens keep the old fallback,
+ * so their compact layouts do not move. */
 const lv_font_t *muse_ui_font(const lv_font_t *font)
 {
 #if CONFIG_MUSE_CJK_FONT
@@ -497,8 +506,17 @@ const lv_font_t *muse_ui_font(const lv_font_t *font)
 #endif
     };
     static lv_font_t fonts[sizeof(bases) / sizeof(bases[0])];
+    static lv_font_t clear_fonts[sizeof(bases) / sizeof(bases[0])];
     for (unsigned i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
         if (font != bases[i]) continue;
+        if (s_w >= 320) {
+            if (!clear_fonts[i].get_glyph_dsc) {
+                clear_fonts[i] = *font;
+                clear_fonts[i].fallback = chat_font();
+                clear_fonts[i].line_height = LV_MAX(font->line_height, 28);
+            }
+            return &clear_fonts[i];
+        }
         if (!fonts[i].get_glyph_dsc) {
             fonts[i] = *font;
             fonts[i].fallback = &muse_font_cjk_16;
@@ -510,11 +528,15 @@ const lv_font_t *muse_ui_font(const lv_font_t *font)
     return font;
 }
 
-/* unscii-16 for captions and replies; with CONFIG_MUSE_CJK_FONT, a copy that
- * falls back to Unifont's 16x16 CJK, the same cell, for what unscii lacks. */
+/* Captions and replies; on a compact 320 px or wider screen, the chat
+ * font itself, so face captions are antialiased like chat bubbles.
+ * Other screens keep unscii-16 with the Unifont 16 fallback. */
 static const lv_font_t *caption_font(void)
 {
 #if CONFIG_MUSE_CJK_FONT
+    if (s_small && s_w >= 320) {
+        return chat_font();
+    }
     static lv_font_t font;
     if (!font.get_glyph_dsc) {
         font = lv_font_unscii_16;
@@ -536,9 +558,10 @@ static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t co
     return l;
 }
 
-/* Chat bubbles only: Montserrat 20 for Latin, Noto Sans CJK SC 20 px (4 bpp,
- * antialiased, common chars) for Chinese, Unifont 16 for the rest. The face
- * and settings keep their old fonts, so no existing layout moves. */
+/* Chat bubbles, and (via muse_ui_font/caption_font on 320 px or wider
+ * screens) the face and settings too: Montserrat 20 for Latin, Noto Sans
+ * CJK SC 20 px (4 bpp, antialiased, common chars) for Chinese, Unifont 16
+ * for the rest. */
 #if CONFIG_MUSE_CJK_FONT
 LV_FONT_DECLARE(muse_font_noto_sc_20)
 #endif

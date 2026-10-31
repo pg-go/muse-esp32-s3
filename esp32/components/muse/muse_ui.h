@@ -23,7 +23,10 @@
 #include "sdkconfig.h"
 #include "lvgl.h"
 
-/* UI fonts retain Latin/symbol glyphs and fall back to the bundled CJK font. */
+/* UI fonts retain Latin/symbol glyphs and fall back to CJK: on 320 px or
+ * wider screens, to the clear chat font (Montserrat 20 + Noto Sans CJK SC
+ * 20 px, 4 bpp antialiased, line height 28); on smaller screens, to the
+ * bundled Unifont 16, so compact layouts do not move. */
 const lv_font_t *muse_ui_font(const lv_font_t *font);
 
 /*
