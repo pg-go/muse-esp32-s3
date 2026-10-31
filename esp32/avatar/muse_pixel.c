@@ -44,8 +44,6 @@ enum {
     C_SHADOW,
     C_HEART,
     C_WHITE,
-    C_EYEB,       /* ghost eye: blue iris */
-    C_EYEL,       /* ghost eye: light blue */
     C_COUNT,
 };
 
@@ -69,24 +67,21 @@ static const scheme_t SCHEMES[MUSE_MODE_COUNT] = {
     [MUSE_MODE_OFF]       = { { 0xd8d4ff, 0x8f86d9, 0x5a4fb0, 0x2e2870 }, 0x7c72d0 },
 };
 
-/* White ghost: smooth white/grey body, no peach face panel (the face
- * colours are white/grey so the panel blends into the body), blue
- * eyes with white sparkles. The old fur tones become the ghost's
- * shading, so the same shading code draws a smooth ghost. */
+/* Cream fur and a peach face. */
 static const uint32_t FIXED[C_COUNT] = {
     [C_BG] = 0x000000,
-    [C_OUT] = 0x333344,
-    [C_OUT2] = 0xd8d8e0,
-    [C_BD] = 0xd0d0dc,
-    [C_BM] = 0xe4e4ec,
-    [C_BL] = 0xf2f2f8,
-    [C_BH] = 0xffffff,
-    [C_SKIND] = 0xd8d8e0,
-    [C_SKIN] = 0xffffff,
-    [C_SKINL] = 0xffffff,
-    [C_IRIS] = 0x1a1a4a,
+    [C_OUT] = 0x3a2b22,
+    [C_OUT2] = 0x8c7560,
+    [C_BD] = 0xae987e,
+    [C_BM] = 0xcfbc9f,
+    [C_BL] = 0xe6d7bd,
+    [C_BH] = 0xf8eedc,
+    [C_SKIND] = 0xe9cba4,
+    [C_SKIN] = 0xf6dfbd,
+    [C_SKINL] = 0xfdeed6,
+    [C_IRIS] = 0x120d0b,
     [C_SHINE] = 0xffffff,
-    [C_BROW] = 0x333344,
+    [C_BROW] = 0x6b5444,
     [C_BLUSH] = 0xf4aaa0,
     [C_BLUSHD] = 0xea8f8e,
     [C_MOUTH] = 0x3a1f1a,
@@ -94,8 +89,6 @@ static const uint32_t FIXED[C_COUNT] = {
     [C_SHADOW] = 0x16101f,
     [C_HEART] = 0xff4f8b,
     [C_WHITE] = 0xffffff,
-    [C_EYEB] = 0x3a3ab8,
-    [C_EYEL] = 0x7a7aff,
 };
 
 static rgb_t s_scheme[5];      /* live, blended: f0..f3, acc */
@@ -430,10 +423,8 @@ static inline int32_t hash16(int x, int y)
 }
 
 /*
- * The avatar: a white ghost shaped like a rounded bullet, with a smooth
- * white body, large blue eyes with white sparkles, rosy cheeks, and a
- * wavy bottom made from the two little feet. No arms: the ghost in
- * preview 4 has none, so the limbs are hidden (see muse_pixel_render).
+ * The avatar: a tall furry hood shaped like a rounded bullet, with a smooth peach
+ * face panel, bead eyes, rosy cheeks, stubby arms and two little feet.
  */
 typedef struct {
     float cx, cy;   /* body centre */
@@ -638,59 +629,13 @@ typedef enum {
     EYES_WIDE,
     EYES_HAPPY,
     EYES_X,
-    EYES_GHOST,
-    EYES_GHOST_WIDE,
-    EYES_HEART,
 } eye_style_t;
 
-/* The ghost's eyes: large blue irises with a white sparkle, not the
- * old small black beads. Two stamps: blue iris first, then white
- * highlights on top. Wide is one pixel larger all round. */
-static void draw_ghost_eye(int cx, int cy, bool wide)
-{
-    if (wide) {
-        /* '#' = blue iris, 'o' = white highlight. */
-        static const char *const BIG[] = {
-            "..###..",
-            ".#####.",
-            "##o####",
-            "#######",
-            "####o##",
-            ".#####.",
-            "..###..",
-        };
-        stamp(BIG, 7, cx - 3, cy - 3, C_EYEB, C_WHITE);
-    } else {
-        static const char *const EYE[] = {
-            ".###.",
-            "#o###",
-            "#####",
-            "#####",
-            ".###.",
-        };
-        stamp(EYE, 5, cx - 2, cy - 2, C_EYEB, C_WHITE);
-        px(cx + 1, cy + 1, C_WHITE);
-    }
-}
-
+/* The eyes are small glossy black beads. */
 static void draw_eye(float ex, float ey, float openness, eye_style_t style, float gx, float gy)
 {
     int cx = iround(ex + gx * 0.8f), cy = iround(ey + gy * 0.7f);
 
-    if (style == EYES_GHOST || style == EYES_GHOST_WIDE) {
-        if (openness < 0.3f) {
-            static const char *const SHUT[] = { "#..#", ".##." };
-            stamp(SHUT, 2, iround(ex) - 2, iround(ey) + 1, C_IRIS, C_IRIS);
-            return;
-        }
-        draw_ghost_eye(cx, cy, style == EYES_GHOST_WIDE);
-        return;
-    }
-    if (style == EYES_HEART) {
-        static const char *const HEART[] = { ".#.#.", "#o###", "#####", ".###.", "..#.." };
-        stamp(HEART, 5, cx - 2, cy - 2, C_HEART, C_WHITE);
-        return;
-    }
     if (style == EYES_HAPPY) {
         static const char *const HAPPY[] = { ".##.", "#..#" };
         stamp(HAPPY, 2, iround(ex) - 2, iround(ey), C_IRIS, C_IRIS);
@@ -948,9 +893,6 @@ void muse_pixel_render(const muse_pose_t *p)
     /* Powering down: the avatar waves, then nods off as the glow fades. */
     float fade = mode == MUSE_MODE_OFF ? clampf(1.0f - p->mode_t / 1.3f, 0, 1) : 1.0f;
     float happy = p->happy;
-    if (p->expr == MUSE_EXPR_HAPPY && mode != MUSE_MODE_ERROR && mode != MUSE_MODE_OFF) {
-        happy = 1.0f;   /* tap-happy hops and shows hearts, like a pet */
-    }
     float level = p->level;
     float t = p->t;
 
@@ -1063,11 +1005,6 @@ void muse_pixel_render(const muse_pose_t *p)
         break;
     }
     }
-    /* Ghost has no arms: move them far outside the body's bounding
-     * box so draw_avatar's loop never reaches them. Feet stay, in
-     * white, as the ghost's wavy bottom. */
-    arms[0] = (limb_t){ j.cx + 100.0f, j.cy, 0.0f };
-    arms[1] = (limb_t){ j.cx - 100.0f, j.cy, 0.0f };
     draw_avatar(&j, arms, feet);
 
     /* ---- face ---- */
@@ -1110,52 +1047,8 @@ void muse_pixel_render(const muse_pose_t *p)
         mouth = MOUTH_GRIN;
     }
 
-    /* Ghost eyes replace the old beads in every normal mode, and
-     * tap-cycled expressions override the mode pose (except ERROR,
-     * OFF and BOOT, which keep their own face). A tap shows one
-     * expression for a few seconds, then the mode pose returns. */
-    int expr = p->expr;
-    if (expr < 0 || expr >= MUSE_EXPR_COUNT) {
-        expr = MUSE_EXPR_NORMAL;
-    }
-    bool expr_active = expr != MUSE_EXPR_NORMAL && mode != MUSE_MODE_ERROR &&
-                       mode != MUSE_MODE_OFF && mode != MUSE_MODE_BOOT;
-    if (expr_active) {
-        open = 1.0f;
-        switch (expr) {
-        case MUSE_EXPR_HAPPY:
-            style = EYES_HAPPY;
-            mouth = MOUTH_GRIN;
-            break;
-        case MUSE_EXPR_SURPRISED:
-            style = EYES_GHOST_WIDE;
-            mouth = MOUTH_O;
-            break;
-        case MUSE_EXPR_WINK:
-            /* Left eye ghost, right eye shut: drawn separately below. */
-            style = EYES_GHOST;
-            mouth = MOUTH_SMILE;
-            break;
-        case MUSE_EXPR_LOVE:
-            style = EYES_HEART;
-            mouth = MOUTH_GRIN;
-            break;
-        default:
-            break;
-        }
-    } else if (style == EYES_NORMAL) {
-        style = EYES_GHOST;
-    } else if (style == EYES_WIDE) {
-        style = EYES_GHOST_WIDE;
-    }
-
-    if (expr_active && expr == MUSE_EXPR_WINK) {
-        draw_eye(j.fx - eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
-        draw_eye(j.fx + eye_dx, eye_y, 0.0f, style, s_eyes.gx, s_eyes.gy);
-    } else {
-        draw_eye(j.fx - eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
-        draw_eye(j.fx + eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
-    }
+    draw_eye(j.fx - eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
+    draw_eye(j.fx + eye_dx, eye_y, open, style, s_eyes.gx, s_eyes.gy);
 
     /* Tiny brows for the expressive states. */
     int bl = iround(j.fx - eye_dx), br = iround(j.fx + eye_dx), by = iround(eye_y) - 4;
@@ -1185,8 +1078,6 @@ void muse_pixel_render(const muse_pose_t *p)
     }
     if (happy > 0) {
         draw_hearts(j.cx, top + 1, t, happy);
-    } else if (expr_active && (expr == MUSE_EXPR_HAPPY || expr == MUSE_EXPR_LOVE)) {
-        draw_hearts(j.cx, top + 1, t, 1.0f);
     }
     if (mode == MUSE_MODE_ERROR) {
         draw_alert(iround(j.cx + 18), iround(top - 1));
