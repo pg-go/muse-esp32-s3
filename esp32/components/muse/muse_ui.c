@@ -178,6 +178,13 @@ static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
 #define FACE_IDLE_S 20
 static int64_t s_last_activity_us;
 static lv_obj_t *s_last_tile;
+/* Tap-cycled expressions: each tap on the avatar shows the next
+ * expression for 2.5 s, then the mode pose returns. The next index
+ * keeps advancing across taps, so consecutive taps never repeat. */
+#define CLICK_EXPR_S 2.5f
+static int s_click_expr;
+static int s_click_next = MUSE_EXPR_HAPPY;
+static int64_t s_click_expr_until_us;
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -481,7 +488,12 @@ static void build_button_icons(lv_obj_t *face)
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
-    muse_state_make_happy();
+    s_click_expr = s_click_next;
+    s_click_next = s_click_next % (MUSE_EXPR_COUNT - 1) + 1;
+    s_click_expr_until_us = esp_timer_get_time() + (int64_t)(CLICK_EXPR_S * 1000000);
+    if (s_click_expr == MUSE_EXPR_HAPPY) {
+        muse_state_make_happy();
+    }
 }
 
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
@@ -521,6 +533,13 @@ const lv_font_t *muse_ui_font(const lv_font_t *font)
                 clear_fonts[i] = *font;
                 clear_fonts[i].fallback = chat_font();
                 clear_fonts[i].line_height = LV_MAX(font->line_height, 28);
+                /* CJK glyphs are positioned from the base line: unscii's
+                 * base_line is 0, so a 20 px Noto glyph sits on the
+                 * label's bottom edge and its lower strokes are cut,
+                 * as the face "就绪" line showed. Give the copy the
+                 * chat font's base line (Montserrat 20, 4 px) so the
+                 * glyph has room below it, like a chat bubble does. */
+                clear_fonts[i].base_line = LV_MAX(font->base_line, chat_font()->base_line);
             }
             return &clear_fonts[i];
         }
@@ -528,6 +547,7 @@ const lv_font_t *muse_ui_font(const lv_font_t *font)
             fonts[i] = *font;
             fonts[i].fallback = &muse_font_cjk_16;
             fonts[i].line_height = LV_MAX(font->line_height, 16);
+            fonts[i].base_line = LV_MAX(font->base_line, muse_font_cjk_16.base_line);
         }
         return &fonts[i];
     }
@@ -2156,12 +2176,14 @@ static void frame_tick(lv_timer_t *timer)
     float level = muse_state_level();
     s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
+    int expr = esp_timer_get_time() < s_click_expr_until_us ? s_click_expr : MUSE_EXPR_NORMAL;
     muse_pose_t pose = {
         .mode = mode,
         .t = now,
         .mode_t = mode_t,
         .level = s_level,
         .happy = muse_state_happiness(),
+        .expr = expr,
     };
     muse_pixel_render(&pose);
     invalidate_muse();
