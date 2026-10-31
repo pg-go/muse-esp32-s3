@@ -39,6 +39,7 @@
 #include "muse_ui.h"
 #include "muse_voice.h"
 #include "muse_wifi.h"
+#include "muse_wifi_hotspot.h"
 
 /* Keep content in a column that stays inside a round panel (and fits a 368 px one). */
 #define LIST_W 330
@@ -80,6 +81,7 @@ static lv_obj_t *s_home_wifi, *s_home_hatch, *s_home_ble, *s_home_sound, *s_home
 
 /* Wi-Fi page. */
 static lv_obj_t *s_wifi_sw, *s_wifi_status, *s_wifi_saved, *s_wifi_scan_btn, *s_wifi_scan_lbl, *s_wifi_list;
+static lv_obj_t *s_hotspot_lbl;
 static uint32_t s_shown_scan_gen = UINT32_MAX;
 static muse_wifi_ap_t s_aps[MAX_APS];
 static muse_wifi_saved_t s_saved[MUSE_WIFI_SAVED_MAX];
@@ -127,7 +129,12 @@ static lv_obj_t *label(lv_obj_t *parent, const lv_font_t *font, uint32_t color, 
 {
     char shown[SHOWN_MAX];
     lv_obj_t *l = lv_label_create(parent);
-    if (s_compact && font == &lv_font_montserrat_20) font = &lv_font_montserrat_16;
+    /* On a narrow compact screen, 20 px titles do not fit, so they drop
+     * to 16 px. On a 320 px wide screen they fit, and keeping 20 px puts
+     * settings titles on the same clear chat font as the bubbles. */
+    if (s_compact && font == &lv_font_montserrat_20 && muse_board->width < 320) {
+        font = &lv_font_montserrat_16;
+    }
     lv_obj_set_style_text_font(l, muse_ui_font(font), 0);
     lv_obj_set_style_text_color(l, lv_color_hex(color), 0);
     lv_label_set_text(l, muse_text_showable(text, shown, sizeof(shown)));
@@ -550,7 +557,16 @@ static void build_text_page(lv_obj_t *tile)
 
     const lv_font_t *font = s_text_compact ? &lv_font_montserrat_16 : &lv_font_montserrat_20;
     int h = s_text_compact ? 34 : text_px(48), border = 2;
-    int pad = (h - 2 * border - lv_font_get_line_height(font)) / 2;
+    /* Pad against the font that is actually used (muse_ui_font raises the
+     * line height to 28 on 320 px screens for the Noto glyphs); if the
+     * field would be too short for it, grow the field instead of
+     * clipping the text. */
+    int used_line = lv_font_get_line_height(muse_ui_font(font));
+    int pad = (h - 2 * border - used_line) / 2;
+    if (pad < 2) {
+        h = used_line + 2 * border + 4;
+        pad = 2;
+    }
     s_text_ta = lv_textarea_create(s_text);
     lv_textarea_set_one_line(s_text_ta, true);
     lv_obj_set_size(s_text_ta, text_px(300), h);
@@ -628,6 +644,16 @@ static void on_wifi_scan(lv_event_t *e)
 {
     (void)e;
     muse_wifi_scan();
+}
+
+static void on_hotspot(lv_event_t *e)
+{
+    (void)e;
+    if (muse_wifi_hotspot_running()) {
+        muse_wifi_hotspot_stop();
+    } else {
+        muse_wifi_hotspot_start();
+    }
 }
 
 static void on_wifi_pass(const char *pass)
@@ -779,6 +805,8 @@ static void build_wifi_page(lv_obj_t *tile)
 
     s_wifi_saved = column(list);
     s_wifi_scan_btn = button(list, muse_tr("Scan for networks"), COLOR_ACCENT, on_wifi_scan, &s_wifi_scan_lbl);
+    button(list, muse_tr("Hotspot setup"), COLOR_ACCENT, on_hotspot, &s_hotspot_lbl);
+    note(list, muse_tr("Hotspot setup: no password. Join the hotspot on your phone and open 192.168.4.1 to pick a network. It closes on success or after 5 minutes."));
     s_wifi_list = column(list);
 
     row(list, LV_SYMBOL_EDIT, muse_tr("Other network..."), NULL, on_wifi_other, NULL);
@@ -829,6 +857,17 @@ static void tick_wifi(void)
     lv_obj_set_flag(s_wifi_scan_btn, LV_OBJ_FLAG_HIDDEN, !on);
     lv_obj_set_flag(s_wifi_list, LV_OBJ_FLAG_HIDDEN, !on);
     set_text(s_wifi_scan_lbl, muse_wifi_scanning() ? muse_tr("Scanning...") : muse_tr("Scan for networks"));
+    if (s_hotspot_lbl) {
+        if (muse_wifi_hotspot_running()) {
+            char name[32];
+            muse_wifi_hotspot_name(name, sizeof(name));
+            char hbuf[96];
+            snprintf(hbuf, sizeof(hbuf), "Hotspot on: %s (192.168.4.1) - tap to stop", name);
+            set_text(s_hotspot_lbl, hbuf);
+        } else {
+            set_text(s_hotspot_lbl, muse_tr("Hotspot setup"));
+        }
+    }
     rebuild_saved_list();
     tick_saved_list(&w);
     /* The scan found one: join it now rather than at the next look. */

@@ -42,6 +42,7 @@ if(CONFIG_MUSE_ENABLED)
         "muse_keypad.c"
         "muse_lv_mem.c"
         "muse_link.c"
+        "muse_wifi_hotspot.c"
         "muse_ble.c")
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
@@ -49,9 +50,10 @@ if(CONFIG_MUSE_ENABLED)
     else()
         list(APPEND srcs "muse_chat_link.c")   # text replies over Link's session
     endif()
-    list(APPEND srcs "muse_chat_text.c")
+    list(APPEND srcs "muse_chat_text.c" "muse_wav_record.c" "muse_log_file.c")
     if(CONFIG_MUSE_CJK_FONT)
         list(APPEND srcs "fonts/muse_font_cjk_16.c")   # captions' CJK fallback
+        list(APPEND srcs "fonts/muse_font_noto_sc_20.c")   # chat bubbles: Noto Sans CJK SC 20 px, common chars
     endif()
     # Your own character (tools/muse/AVATAR_RECIPE.md) stands in for the default
     # avatar when avatar/muse_pixel.c exists here; this avatar/ is gitignored. The
@@ -109,16 +111,16 @@ if(CONFIG_MUSE_ENABLED)
 elseif(CONFIG_HOMEHUB_VOICE)
     # The Voice PE board uses just the Hatch voice session; the project's main/
     # voice_muse_chat.c stands in for the Muse settings, Wi-Fi and Link hooks.
-    list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_chat_text.c" "muse_text.c")
+    list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp" "muse_chat_text.c" "muse_text.c" "muse_wav_record.c")
     list(APPEND embed "test_reply.mp3")
 endif()
 
 set(muse_priv_requires
     esp_timer esp_driver_usb_serial_jtag esp_psram nvs_flash
-    bt esp-tls mbedtls esp_app_format esp_http_client
+    bt esp-tls mbedtls esp_app_format esp_http_client esp_http_server
     noise_core minimp3
     esp_lcd esp_adc esp_driver_i2s esp_driver_ledc esp_driver_spi esp_driver_uart esp_wifi
-    esp_driver_pcnt)
+    esp_driver_pcnt fatfs esp_driver_sdmmc)
 list(APPEND muse_priv_requires camera)
 
 idf_component_register(
