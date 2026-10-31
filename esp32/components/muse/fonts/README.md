@@ -14,6 +14,7 @@ file is a conversion of an unaltered subset of the font.
 
 `muse_font_noto_sc_20.c` is the chat page's Chinese font only, also built in
 with `CONFIG_MUSE_CJK_FONT`. It holds Noto Sans CJK SC at 20 px, 4 bpp, for
+general punctuation (including U+2026 …, U+2014 —, U+201C/U+201D “”),
 CJK punctuation, kana, fullwidth forms and the GB2312 level-1 common
 characters (3755): about 730 KB of bitmaps, uncompressed. Characters outside
 that set fall back to `muse_font_cjk_16` at runtime.

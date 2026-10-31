@@ -15,9 +15,13 @@
 #
 # Regenerates components/muse/fonts/muse_font_noto_sc_20.c, the chat page's
 # Chinese font: Noto Sans CJK SC (SIL Open Font License 1.1, free) at 20 px,
-# 4 bpp antialiased, for CJK punctuation, kana, fullwidth forms and the
+# 4 bpp antialiased, for general punctuation (including U+2026 …, U+2014 —,
+# U+201C/U+201D “”), CJK punctuation, kana, fullwidth forms and the
 # GB2312 level-1 common characters (3755). Characters outside that set fall
 # back to muse_font_cjk_16 at runtime, so a rare character still shows.
+# General punctuation matters: neither Montserrat nor the CJK16 fallback
+# covers U+2026, so a chat text containing … rendered as a tofu box
+# (seen 2026-10-31 in the “语音录音中…” bubble) until this range was added.
 #
 # Why a subset: the full CJK set at 20 px / 4 bpp is about 2.4 MB of bitmaps,
 # more than the app slot's free space (about 1.1 MB); the common subset is
@@ -50,7 +54,7 @@ sys.stdout.write(''.join(chars))
 
 npx -y lv_font_conv@1.5.3 --font "$TMP/NotoSansCJKsc-Regular.otf" --size 20 --bpp 4 \
     --format lvgl --lv-font-name muse_font_noto_sc_20 --no-kerning --no-compress \
-    -r 0x3000-0x30FF -r 0xFF00-0xFFEF --symbols "$SYMBOLS" -o "$TMP/font.c"
+    -r 0x2000-0x206F -r 0x3000-0x30FF -r 0xFF00-0xFFEF --symbols "$SYMBOLS" -o "$TMP/font.c"
 # The project includes LVGL as "lvgl.h"; the header names no temp paths.
 sed -e 's|#include "lvgl/lvgl.h"|#include "lvgl.h"|' -e "s|$TMP/||g" "$TMP/font.c" > "$OUT"
 echo "wrote $OUT"
