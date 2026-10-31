@@ -171,6 +171,13 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
+/* Idle return to the face: last user operation, in esp_timer us.
+ * Updated on touch press, on tile change, while a touch is held, and
+ * on mode change (a press starts a turn, a turn ending gives the user
+ * 20 s to read the reply before returning). */
+#define FACE_IDLE_S 20
+static int64_t s_last_activity_us;
+static lv_obj_t *s_last_tile;
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -1458,6 +1465,7 @@ static void on_any_press(lv_event_t *e)
 {
     (void)e;
     muse_state_poke();
+    s_last_activity_us = esp_timer_get_time();
 }
 
 static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
@@ -1957,15 +1965,23 @@ static void update_status(muse_mode_t mode, float now)
 
     static char caption[MUSE_CAPTION_MAX];
     bool fresh = muse_state_caption(caption, sizeof(caption), &s_caption_version);
+    /* Face page no longer shows reply text: a dedicated chat page
+     * exists (s_tv), so replies live there. During THINKING/SPEAKING
+     * the face keeps only the avatar, the state name and the status
+     * row; the reply label/caption are hidden, and the avatar does
+     * not shrink into an answer layout. Short non-reply captions
+     * (listening time, hold-longer, setup errors) still show on the
+     * face when not replying, because they are not chat messages. */
+    bool reply_phase = mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING;
     int answer = -1;
-    if (s_reply_lbl) {
+    if (s_reply_lbl && !s_tv) {
         /* The speaker picks the layout, even mid-reply: the voice task pages to fit. */
         int layout = muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
         if (layout != s_page_for) {
             muse_state_set_page(s_answers[layout].cols, s_answers[layout].lines);
             s_page_for = layout;
         }
-        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
+        if (reply_phase) {
             answer = layout;
         }
     }
@@ -1973,7 +1989,14 @@ static void update_status(muse_mode_t mode, float now)
         set_answer(answer);
         fresh = true;   /* the caption moves between labels */
     }
-    if (fresh) {
+    if (s_tv && reply_phase) {
+        if (s_caption_lbl) {
+            lv_obj_add_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_reply_lbl) {
+            lv_obj_add_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else if (fresh) {
         lv_obj_t *lbl = answer >= 0 ? s_reply_lbl : s_caption_lbl;
 #if CONFIG_MUSE_CJK_FONT
         if (s_small) {
@@ -2085,6 +2108,30 @@ static void frame_tick(lv_timer_t *timer)
         }
         chat_set_status(mode);
         s_last_mode = mode;
+        /* A press starts a turn, and a turn ending starts the 20 s
+         * reading window: either way, the idle clock restarts. */
+        s_last_activity_us = esp_timer_get_time();
+    }
+    /* Idle return to the face: 20 s with no operation (no press, no
+     * tile change, no touch held) and no turn running, while off the
+     * face, goes back to the face tile. A turn running gates it, so a
+     * reply is never cut off mid-way; the clock restarts when the
+     * turn ends, above. While a touch is held, the user is still
+     * operating, so a long drag cannot trigger a return mid-drag. */
+    if (s_tv && s_face && mode == MUSE_MODE_IDLE) {
+        lv_obj_t *tile = lv_tileview_get_tile_active(s_tv);
+        if (tile != s_last_tile) {
+            s_last_tile = tile;
+            s_last_activity_us = esp_timer_get_time();
+        }
+        if (s_indev && lv_indev_get_state(s_indev) == LV_INDEV_STATE_PRESSED) {
+            s_last_activity_us = esp_timer_get_time();
+        }
+        if (tile != s_face &&
+            esp_timer_get_time() - s_last_activity_us >= (int64_t)FACE_IDLE_S * 1000000) {
+            lv_tileview_set_tile(s_tv, s_face, LV_ANIM_ON);
+            s_last_activity_us = esp_timer_get_time();
+        }
     }
     if (update_sleep()) {
         return;
