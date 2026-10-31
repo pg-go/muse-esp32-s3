@@ -647,7 +647,10 @@ static void chat_scroll_to_last(void)
 {
     uint32_t n = lv_obj_get_child_count(s_chat_content);
     if (n) {
-        lv_obj_scroll_to_view_recursive(lv_obj_get_child(s_chat_content, n - 1), LV_ANIM_ON);
+        /* No animation: live bubbles update as speech/text arrives, and
+         * an animated scroll lags behind the update, fights a manual
+         * scroll, and leaves the bubble half-shown while it runs. */
+        lv_obj_scroll_to_view_recursive(lv_obj_get_child(s_chat_content, n - 1), LV_ANIM_OFF);
     }
 }
 
@@ -848,22 +851,52 @@ static void chat_turn_finish(void)
     }
 }
 
-/* While a reply is arriving, show its current page in one live bubble. */
+/* While a reply is arriving, show its full text so far in one live
+ * bubble, growing as text arrives. The old code showed the face caption
+ * page here: a page is only 2 lines pre-wrapped to the face's width,
+ * so in a chat bubble (narrower, 12 Chinese chars a line) those lines
+ * broke early, left short/empty lines, and only turned every few
+ * seconds as speech advanced, until the turn ended and the full text
+ * replaced it. The chat page is a transcript, not a karaoke display:
+ * full text wraps to the bubble's own width, fills every line, and
+ * arrives as fast as the server sends it, ahead of the audio.
+ * Only if no message text has arrived yet (audio-only edge case) does
+ * it fall back to the caption page. */
 static void chat_live_caption(const char *caption)
 {
-    if (!s_chat_content || !caption[0] || caption[0] == '"') {
-        return;   /* quoted captions are the note's echo, not the reply */
-    }
-    if (!strcmp(caption, muse_tr("SENDING VOICE NOTE")) ||
-        !strcmp(caption, muse_tr("NOTE SENT - WAITING FOR MUSE")) ||
-        !strcmp(caption, muse_tr("SENDING SAVED NOTE")) ||
-        !strcmp(caption, muse_tr("SAVED NOTE SENT"))) {
+    if (!s_chat_content) {
         return;
     }
-    if (s_chat_live_lbl) {
-        chat_update_bubble_text(s_chat_live_lbl, caption);
+    static char text[1024];
+    const char *show = NULL;
+    if (muse_hatch_turn_message_count() > 0 &&
+        muse_hatch_turn_message_text(0, text, sizeof(text))) {
+        /* Full text first: it may already have arrived while the
+         * caption still says SENDING / NOTE SENT, and waiting for the
+         * caption to turn would delay the bubble by seconds. */
+        show = text;
     } else {
-        s_chat_live_lbl = chat_add_bubble(false, caption);
+        if (!caption[0] || caption[0] == '"') {
+            return;   /* quoted captions are the note's echo, not the reply */
+        }
+        if (!strcmp(caption, muse_tr("SENDING VOICE NOTE")) ||
+            !strcmp(caption, muse_tr("NOTE SENT - WAITING FOR MUSE")) ||
+            !strcmp(caption, muse_tr("SENDING SAVED NOTE")) ||
+            !strcmp(caption, muse_tr("SAVED NOTE SENT"))) {
+            return;
+        }
+        show = caption;
+    }
+    if (s_chat_live_lbl) {
+        /* Caption pages change as speech advances even when the reply
+         * text has not: skip those, so the bubble is not resized and
+         * scrolled again for nothing. */
+        if (!strcmp(lv_label_get_text(s_chat_live_lbl), show)) {
+            return;
+        }
+        chat_update_bubble_text(s_chat_live_lbl, show);
+    } else {
+        s_chat_live_lbl = chat_add_bubble(false, show);
     }
 }
 
@@ -1956,9 +1989,14 @@ static void update_status(muse_mode_t mode, float now)
         if (s_reply_lbl) {
             lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
         }
-        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
-            chat_live_caption(caption);
-        }
+    }
+    /* Live chat text is polled every frame, not only when the face
+     * caption changes: the caption only turns when speech reaches the
+     * next page (seconds apart), while reply text arrives from the
+     * server ahead of the audio. chat_live_caption() itself dedupes,
+     * so a frame with no new text costs only a copy and a compare. */
+    if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
+        chat_live_caption(caption);
     }
     update_power(now);
 }
