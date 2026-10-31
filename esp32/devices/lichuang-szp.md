@@ -51,3 +51,51 @@ This is UI localization, not a Chinese input method. SSIDs, passwords and
 chat replies retain their original text. Both languages were checked with
 on-device snapshots, and persistence was checked with a hardware reset.
 The shared UI also builds for FNK0104B with the default English configuration.
+
+## WAV recording to TF card (T1 branch)
+
+Each push-to-talk turn archives to the TF card under `/sdcard/muse/`:
+`muse_NNNNN_user.wav` (16 kHz, 16-bit, mono PCM, the voice note's own
+format), `muse_NNNNN_reply.txt` (Muse's reply text). `muse_NNNNN_reply.wav`
+only appears once a real TTS implementation feeds decoded audio; today
+replies are captions, so a turn is user WAV + reply text. Presses under
+0.3 s are deleted, like "DIDN'T CATCH THAT". Recording is best-effort:
+a missing card, a mount failure, or a write error never breaks chat.
+
+TF wiring, confirmed 2026-10-28 from the SZP schematic
+(XD-ESP32S3-V1.0_1, page 1, TF interface, marked "1-SD mode"):
+SD CLK = GPIO47, SD CMD = GPIO48, SD D0 = GPIO21. D1-D3 are not
+wired to the ESP32 (51k pull-ups only), so the recorder always uses
+SDMMC 1-bit mode. These are the Kconfig defaults and are also set
+explicitly in sdkconfig.muse-lichuang-szp, so a preset build records
+without any menuconfig change. If boot instead logs "TF recording
+disabled: SD pins not configured", one of the three values was set
+to -1; if it logs a mount failure, the card, not the pins, is the
+first thing to check.
+
+### TF card format
+
+The recorder uses ESP-IDF FatFs, so the card must be FAT: FAT32 is
+the practical choice (FAT12/16 also mount). exFAT and NTFS do not
+mount in this build (FatFs is built with `FF_FS_EXFAT=0`), which is
+the usual failure for a card over 32 GB, since Windows and macOS
+format those exFAT by default. A card with only a few hundred MB of
+recordings is plenty: one press is under 500 KB. Formatting on a
+computer first is the recommended route (FAT32, any small card).
+
+If a card cannot mount on the board, it can be formatted on the
+board instead, from the serial monitor (`idf.py monitor`), in two
+steps so a stray line cannot wipe a card:
+
+```
+>tf.format
+>tf.format.confirm
+```
+
+The first line only arms and prints the warning; the second erases
+ALL data on the card and formats it to FAT (FAT12/16/32 by card
+size, never exFAT), recreates `/sdcard/muse`, and restarts numbering
+at `muse_00001`. Formatting never runs at boot and never on a mount
+failure by itself: a card with photos that happens to be exFAT is
+left alone until this command is typed. Do not press BOOT while it
+runs, and if a turn is in progress the format is refused.

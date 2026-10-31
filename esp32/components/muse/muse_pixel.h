@@ -26,11 +26,26 @@
  *
  * Muse is drawn on a coarse MUSE_PX_W x MUSE_PX_H grid with a small palette,
  * ordered dithering and hard outlines, then blown up to the screen with
- * nearest-neighbour blocks so the pixels stay chunky.
+ * nearest-neighbour blocks so the pixels stay chunky. The current
+ * character is a white ghost (preview 4): a smooth white body with a
+ * wavy bottom, large blue eyes with white sparkles, and a happy open
+ * mouth, animated by breathing, blinking, gaze and mode poses like
+ * before, plus tap-cycled expressions (see muse_expr_t).
  */
 
 #define MUSE_PX_W 64
 #define MUSE_PX_H 64
+
+/* Tap-cycled expressions, shown for a few seconds on the face, then
+ * the avatar returns to its mode pose. 0 is the normal pose. */
+typedef enum {
+    MUSE_EXPR_NORMAL = 0,
+    MUSE_EXPR_HAPPY,
+    MUSE_EXPR_SURPRISED,
+    MUSE_EXPR_WINK,
+    MUSE_EXPR_LOVE,
+    MUSE_EXPR_COUNT,
+} muse_expr_t;
 
 typedef struct {
     muse_mode_t mode;
@@ -38,6 +53,7 @@ typedef struct {
     float mode_t;    /* seconds in current mode */
     float level;     /* 0..1 live audio level */
     float happy;     /* 0..1 pet reaction */
+    int expr;        /* muse_expr_t, 0 = normal */
 } muse_pose_t;
 
 /* Accent colour of a mode (for the surrounding UI), as 0xRRGGBB. */

@@ -43,6 +43,7 @@
 #include "muse_state.h"
 #include "muse_ui.h"
 #include "muse_voice.h"
+#include "muse_wav_record.h"
 #include "muse_wifi.h"
 #if CONFIG_MUSE_WATCHER_CAMERA
 #include "boards/watcher_camera.h"
@@ -616,8 +617,34 @@ static void set_face(const char *name)
  * Console-only commands; false for setup commands. Their buffers are taken
  * per command: without PSRAM, static ones would hold internal RAM for good.
  */
+/* Two-step TF format: "tf.format" only arms, "tf.format.confirm" wipes.
+ * The arm flag lives here (serial task only); formatting itself is in
+ * muse_wav_record.c and refuses while a turn is in progress. */
+static bool s_tf_format_armed;
+
 static bool console_command(char *line, bool whole)
 {
+    if (!strcmp(line, "tf.format")) {
+        s_tf_format_armed = true;
+        printf("@tf.format armed: this will ERASE ALL data on the TF card "
+               "and format it to FAT. Type >tf.format.confirm to proceed, "
+               "or ignore this to cancel. Do not press BOOT while formatting.\n");
+        fflush(stdout);
+        return true;
+    }
+    if (!strcmp(line, "tf.format.confirm")) {
+        if (!s_tf_format_armed) {
+            printf("@tf.format.confirm not armed: type >tf.format first\n");
+            fflush(stdout);
+            return true;
+        }
+        s_tf_format_armed = false;
+        bool ok = muse_wav_record_format_card();
+        printf("@tf.format %s\n", ok ? "done: card formatted to FAT, recording resumes at muse_00001"
+                                     : "failed: see log, card left as-is, conversation unaffected");
+        fflush(stdout);
+        return true;
+    }
     if (!strcmp(line, "status")) {
         size_t cap = 1024;   /* long SSID, host and VM names escaped: past 512 */
         char *json = heap_caps_malloc(cap, MUSE_BIG_CAPS);
@@ -701,7 +728,9 @@ static bool console_command(char *line, bool whole)
  * "power.reset" starts it over, "nap" sleeps and leaves Wi-Fi at once (as
  * two minutes asleep on battery would; 'w' rejoins), "face=" shows a face
  * (see set_face), and "chat=" sends a typed message to Hatch (see chat_line
- * and tools/muse/chat.py).
+ * and tools/muse/chat.py). "tf.format" arms a TF-card format and
+ * "tf.format.confirm" erases the card to FAT (see muse_wav_record.c);
+ * formatting never runs at boot or on a mount failure.
  */
 static void serial_task(void *arg)
 {

@@ -39,6 +39,7 @@
 #include "muse_ble.h"
 #include "muse_board.h"
 #include "muse_link.h"
+#include "muse_log_file.h"
 #include "muse_mem.h"
 #include "muse_settings.h"
 #include "muse_state.h"
@@ -616,6 +617,9 @@ static void boot_task(void *arg) {
 }
 
 void muse_glue_start(void) {
+    /* TF boot log: install before Link runs, so its scan /
+     * heartbeat lines are captured too, not just Muse's. */
+    muse_log_file_install();
     s_ready = xEventGroupCreate();
     muse_link_register(&s_ops);
     muse_ble_set_name(identity_ble_name());

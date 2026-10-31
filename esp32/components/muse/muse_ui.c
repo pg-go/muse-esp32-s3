@@ -94,7 +94,8 @@ static lv_indev_t *s_indev;
 static lv_obj_t *s_tv;
 static lv_obj_t *s_face;
 static lv_obj_t *s_settings;
-static lv_obj_t *s_dots[2];
+static lv_obj_t *s_chat_tile;
+static lv_obj_t *s_dots[3];
 static lv_obj_t *s_wifi_icon;
 static lv_obj_t *s_ble_icon;
 static lv_obj_t *s_cover;
@@ -119,6 +120,23 @@ static lv_obj_t *s_name_lbl;    /* this gadget's own name, to tell it from the n
 static lv_obj_t *s_power_lbl;
 static lv_obj_t *s_caption_lbl;
 static lv_obj_t *s_reply_lbl;   /* full layout: the reply's page while answering */
+
+/* Chat page (T1-ui): a full-screen bubble list, separate from the face, so a
+ * long reply is never squeezed under Muse or cut to two lines. With touch it
+ * is a tileview tile left of the face: swipe right on the face to enter it,
+ * swipe left on the face for settings. Without touch it falls back to a
+ * hidden overlay on the screen. */
+#define CHAT_MAX_MSGS 20
+#define CHAT_STATUS_H 28
+static lv_obj_t *s_chat;            /* chat tile, or overlay when there is no tileview */
+static lv_obj_t *s_chat_status_lbl;
+static lv_obj_t *s_chat_content;    /* vertical-scroll bubble list */
+static int s_chat_next_y;
+static lv_obj_t *s_chat_user_lbl;   /* this turn's user bubble label, for its duration */
+static lv_obj_t *s_chat_live_lbl;   /* this turn's live assistant bubble label, replaced by full text */
+static bool s_chat_turn_active;
+static bool s_chat_full_added;
+static int64_t s_chat_listen_start_us;
 static lv_obj_t *s_meter[METER_SEGS];
 static lv_obj_t *s_speaker;
 static lv_obj_t *s_speaker_icon;
@@ -153,6 +171,20 @@ static int s_preview_brightness = -1;
 static int s_shown_page = -1;
 static int s_shown_speaker = -1;
 static muse_mode_t s_last_mode = MUSE_MODE_COUNT;
+/* Idle return to the face: last user operation, in esp_timer us.
+ * Updated on touch press, on tile change, while a touch is held, and
+ * on mode change (a press starts a turn, a turn ending gives the user
+ * 20 s to read the reply before returning). */
+#define FACE_IDLE_S 20
+static int64_t s_last_activity_us;
+static lv_obj_t *s_last_tile;
+/* Tap-cycled expressions: each tap on the avatar shows the next
+ * expression for 2.5 s, then the mode pose returns. The next index
+ * keeps advancing across taps, so consecutive taps never repeat. */
+#define CLICK_EXPR_S 2.5f
+static int s_click_expr;
+static int s_click_next = MUSE_EXPR_HAPPY;
+static int64_t s_click_expr_until_us;
 
 /*
  * While Muse is thinking or speaking it shrinks to make room for the reply:
@@ -456,7 +488,12 @@ static void build_button_icons(lv_obj_t *face)
 static void on_canvas_clicked(lv_event_t *e)
 {
     (void)e;
-    muse_state_make_happy();
+    s_click_expr = s_click_next;
+    s_click_next = s_click_next % (MUSE_EXPR_COUNT - 1) + 1;
+    s_click_expr_until_us = esp_timer_get_time() + (int64_t)(CLICK_EXPR_S * 1000000);
+    if (s_click_expr == MUSE_EXPR_HAPPY) {
+        muse_state_make_happy();
+    }
 }
 
 static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compact)
@@ -468,6 +505,15 @@ static const lv_font_t *font_pick(const lv_font_t *full, const lv_font_t *compac
 LV_FONT_DECLARE(muse_font_cjk_16)
 #endif
 
+static const lv_font_t *chat_font(void);
+
+/* Every other interface uses the chat font for Chinese: on a 320 px or
+ * wider screen, fall back to the chat font (Montserrat 20 + Noto Sans CJK
+ * SC 20 px, 4 bpp antialiased) instead of Unifont 16 (1 bpp, no
+ * antialiasing), which is what made settings/face Chinese look unclear.
+ * Line height is raised to 28 so Noto glyphs are not clipped at the
+ * bottom, as in the chat bubbles. Smaller screens keep the old fallback,
+ * so their compact layouts do not move. */
 const lv_font_t *muse_ui_font(const lv_font_t *font)
 {
 #if CONFIG_MUSE_CJK_FONT
@@ -479,12 +525,29 @@ const lv_font_t *muse_ui_font(const lv_font_t *font)
 #endif
     };
     static lv_font_t fonts[sizeof(bases) / sizeof(bases[0])];
+    static lv_font_t clear_fonts[sizeof(bases) / sizeof(bases[0])];
     for (unsigned i = 0; i < sizeof(bases) / sizeof(bases[0]); i++) {
         if (font != bases[i]) continue;
+        if (s_w >= 320) {
+            if (!clear_fonts[i].get_glyph_dsc) {
+                clear_fonts[i] = *font;
+                clear_fonts[i].fallback = chat_font();
+                clear_fonts[i].line_height = LV_MAX(font->line_height, 28);
+                /* CJK glyphs are positioned from the base line: unscii's
+                 * base_line is 0, so a 20 px Noto glyph sits on the
+                 * label's bottom edge and its lower strokes are cut,
+                 * as the face "就绪" line showed. Give the copy the
+                 * chat font's base line (Montserrat 20, 4 px) so the
+                 * glyph has room below it, like a chat bubble does. */
+                clear_fonts[i].base_line = LV_MAX(font->base_line, chat_font()->base_line);
+            }
+            return &clear_fonts[i];
+        }
         if (!fonts[i].get_glyph_dsc) {
             fonts[i] = *font;
             fonts[i].fallback = &muse_font_cjk_16;
             fonts[i].line_height = LV_MAX(font->line_height, 16);
+            fonts[i].base_line = LV_MAX(font->base_line, muse_font_cjk_16.base_line);
         }
         return &fonts[i];
     }
@@ -492,11 +555,15 @@ const lv_font_t *muse_ui_font(const lv_font_t *font)
     return font;
 }
 
-/* unscii-16 for captions and replies; with CONFIG_MUSE_CJK_FONT, a copy that
- * falls back to Unifont's 16x16 CJK, the same cell, for what unscii lacks. */
+/* Captions and replies; on a compact 320 px or wider screen, the chat
+ * font itself, so face captions are antialiased like chat bubbles.
+ * Other screens keep unscii-16 with the Unifont 16 fallback. */
 static const lv_font_t *caption_font(void)
 {
 #if CONFIG_MUSE_CJK_FONT
+    if (s_small && s_w >= 320) {
+        return chat_font();
+    }
     static lv_font_t font;
     if (!font.get_glyph_dsc) {
         font = lv_font_unscii_16;
@@ -516,6 +583,348 @@ static lv_obj_t *make_label(lv_obj_t *parent, const lv_font_t *font, uint32_t co
     lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
     lv_label_set_text(l, "");
     return l;
+}
+
+/* Chat bubbles, and (via muse_ui_font/caption_font on 320 px or wider
+ * screens) the face and settings too: Montserrat 20 for Latin, Noto Sans
+ * CJK SC 20 px (4 bpp, antialiased, common chars) for Chinese, Unifont 16
+ * for the rest. */
+#if CONFIG_MUSE_CJK_FONT
+LV_FONT_DECLARE(muse_font_noto_sc_20)
+#endif
+static const lv_font_t *chat_font(void)
+{
+#if CONFIG_MUSE_CJK_FONT
+    static lv_font_t font, noto;
+    if (!font.get_glyph_dsc) {
+        noto = muse_font_noto_sc_20;
+        noto.fallback = &muse_font_cjk_16;
+        font = lv_font_montserrat_20;
+        font.fallback = &noto;
+        /* Montserrat 20 alone is 22 px/line, which clips the bottom of
+         * CJK glyphs (Noto's own line height is 38). Give every chat
+         * line 28 px so a two-line bubble is never cut at its bottom. */
+        font.line_height = 28;
+    }
+    return &font;
+#else
+    return &lv_font_montserrat_20;
+#endif
+}
+
+static void chat_open(void);
+static void chat_close(void);
+
+/* Size a bubble to its label: natural width first, clamped to 85% of the
+ * screen, then wrapped to that width. Returns the bubble's height. */
+static int chat_size_bubble(lv_obj_t *bubble, lv_obj_t *lbl)
+{
+    int max_w = s_w * 85 / 100 - 16;
+    lv_obj_set_width(lbl, LV_SIZE_CONTENT);
+    lv_obj_update_layout(lbl);
+    int text_w = lv_obj_get_width(lbl);
+    int bubble_w = (text_w < max_w ? text_w : max_w) + 16;
+    lv_obj_set_width(lbl, bubble_w - 16);
+    /* Re-layout the label at its wrapped width before sizing the bubble:
+     * without this, a multi-line label keeps its single-line height, the
+     * bubble is too short, and the text spills into the next bubble.
+     * Set the height explicitly from the label instead of SIZE_CONTENT,
+     * so a flex parent cannot shrink it back to one line. */
+    lv_obj_update_layout(lbl);
+    lv_obj_set_width(bubble, bubble_w);
+    lv_obj_set_height(bubble, lv_obj_get_height(lbl) + 16);
+    lv_obj_update_layout(bubble);
+    /* Keep the wrapper (the bubble's parent, when present) in step. */
+    lv_obj_t *wrap = lv_obj_get_parent(bubble);
+    if (wrap && wrap != s_chat_content) {
+        lv_obj_set_height(wrap, lv_obj_get_height(bubble));
+    }
+    return lv_obj_get_height(bubble);
+}
+
+/* The bubble list is a flex column (see build_overlays): wrappers stack
+ * on their own, so relayout only has to put each bubble left (assistant)
+ * or right (user) inside its full-width wrapper. Manual y positions are
+ * gone: they were the thing that let a tile layout move bubbles to the
+ * middle of the screen instead of the edges. */
+static void chat_relayout(void)
+{
+    if (!s_chat_content) {
+        return;
+    }
+    int wrap_w = lv_obj_get_content_width(s_chat_content);
+    if (wrap_w <= 0) {
+        wrap_w = s_w - 16;
+    }
+    for (uint32_t i = 0; i < lv_obj_get_child_count(s_chat_content); i++) {
+        lv_obj_t *wrap = lv_obj_get_child(s_chat_content, i);
+        if (!lv_obj_get_child_count(wrap)) {
+            continue;
+        }
+        lv_obj_t *bubble = lv_obj_get_child(wrap, 0);
+        bool user = (int)(intptr_t)lv_obj_get_user_data(bubble) != 0;
+        int x = user ? wrap_w - lv_obj_get_width(bubble) : 0;
+        lv_obj_set_pos(bubble, x, 0);
+        lv_obj_set_size(wrap, wrap_w, lv_obj_get_height(bubble));
+    }
+    s_chat_next_y = 0;
+}
+
+static void chat_scroll_to_last(void)
+{
+    uint32_t n = lv_obj_get_child_count(s_chat_content);
+    if (n) {
+        /* No animation: live bubbles update as speech/text arrives, and
+         * an animated scroll lags behind the update, fights a manual
+         * scroll, and leaves the bubble half-shown while it runs. */
+        lv_obj_scroll_to_view_recursive(lv_obj_get_child(s_chat_content, n - 1), LV_ANIM_OFF);
+    }
+}
+
+static void chat_clear_stale_labels(lv_obj_t *wrap)
+{
+    lv_obj_t *bubble = lv_obj_get_child_count(wrap) ? lv_obj_get_child(wrap, 0) : NULL;
+    lv_obj_t *lbl = bubble && lv_obj_get_child_count(bubble) ? lv_obj_get_child(bubble, 0) : NULL;
+    if (lbl && lbl == s_chat_user_lbl) {
+        s_chat_user_lbl = NULL;
+    }
+    if (lbl && lbl == s_chat_live_lbl) {
+        s_chat_live_lbl = NULL;
+    }
+}
+
+/* One bubble, right (user, green) or left (assistant, grey). Returns its label.
+ * Each bubble lives in its own full-width transparent wrapper, exactly
+ * like Xiaozhi's chat page: the wrapper is the flex item, the bubble is
+ * positioned left/right inside it, so the list always fills the screen
+ * width instead of collapsing to a small centred card. */
+static lv_obj_t *chat_add_bubble(bool user, const char *text)
+{
+    if (!s_chat_content) {
+        return NULL;
+    }
+    while (lv_obj_get_child_count(s_chat_content) >= CHAT_MAX_MSGS) {
+        lv_obj_t *first = lv_obj_get_child(s_chat_content, 0);
+        chat_clear_stale_labels(first);
+        lv_obj_del(first);
+    }
+    lv_obj_t *wrap = lv_obj_create(s_chat_content);
+    lv_obj_remove_style_all(wrap);
+    lv_obj_set_size(wrap, LV_PCT(100), LV_SIZE_CONTENT);
+    lv_obj_set_style_bg_opa(wrap, LV_OPA_TRANSP, 0);
+    lv_obj_remove_flag(wrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_t *bubble = lv_obj_create(wrap);
+    lv_obj_remove_style_all(bubble);
+    lv_obj_set_style_radius(bubble, 8, 0);
+    lv_obj_set_style_bg_opa(bubble, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(bubble, lv_color_hex(user ? 0x1e8e3e : 0x33304a), 0);
+    lv_obj_set_style_pad_all(bubble, 8, 0);
+    lv_obj_remove_flag(bubble, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_add_flag(bubble, LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_user_data(bubble, (void *)(intptr_t)(user ? 1 : 0));
+    lv_obj_t *lbl = lv_label_create(bubble);
+    lv_obj_set_style_text_font(lbl, chat_font(), 0);
+    lv_obj_set_style_text_color(lbl, lv_color_hex(0xffffff), 0);
+    lv_obj_set_style_text_line_space(lbl, 4, 0);
+    lv_obj_set_style_text_align(lbl, LV_TEXT_ALIGN_LEFT, 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_WRAP);
+    lv_label_set_text(lbl, text);
+    chat_size_bubble(bubble, lbl);
+    chat_relayout();
+    chat_scroll_to_last();
+    return lbl;
+}
+
+static void chat_update_bubble_text(lv_obj_t *lbl, const char *text)
+{
+    if (!lbl) {
+        return;
+    }
+    lv_obj_t *bubble = lv_obj_get_parent(lbl);
+    lv_label_set_text(lbl, text);
+    chat_size_bubble(bubble, lbl);
+    chat_relayout();
+    chat_scroll_to_last();
+}
+
+/* Tile case: switch to the chat tile. Overlay case: unhide it. Manual
+ * entry only: nothing calls chat_open() from the mode loop any more, so
+ * the page never pops up on its own while the device sits idle. */
+static void chat_open(void)
+{
+    if (!s_chat) {
+        return;
+    }
+    if (s_chat_tile) {
+        lv_obj_add_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE);
+        lv_tileview_set_tile(s_tv, s_chat_tile, LV_ANIM_ON);
+    } else {
+        lv_obj_remove_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void chat_close(void)
+{
+    if (!s_chat) {
+        return;
+    }
+    if (s_chat_tile) {
+        lv_obj_add_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE);
+        lv_tileview_set_tile(s_tv, s_face, LV_ANIM_ON);
+    } else {
+        lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void on_chat_close_clicked(lv_event_t *e)
+{
+    (void)e;
+    chat_close();
+}
+
+static void chat_set_status(muse_mode_t mode)
+{
+    if (!s_chat_status_lbl) {
+        return;
+    }
+    const char *name;
+    switch (mode) {
+    case MUSE_MODE_LISTENING: name = muse_tr("LISTENING"); break;
+    case MUSE_MODE_THINKING: name = muse_tr("THINKING"); break;
+    case MUSE_MODE_SPEAKING: name = muse_tr("SPEAKING"); break;
+    case MUSE_MODE_ERROR: name = muse_tr("ERROR"); break;
+    default: name = muse_tr("READY"); break;
+    }
+    if (strcmp(name, lv_label_get_text(s_chat_status_lbl)) != 0) {
+        lv_label_set_text(s_chat_status_lbl, name);
+    }
+}
+
+/* A press starts a turn: add a user bubble to the history, duration filled
+ * in when the recording ends. The page itself is manual entry only (swipe
+ * right on the face); starting a turn does not switch tiles. */
+static void chat_turn_start(void)
+{
+    s_chat_turn_active = true;
+    s_chat_full_added = false;
+    s_chat_live_lbl = NULL;
+    s_chat_listen_start_us = esp_timer_get_time();
+    s_chat_user_lbl = chat_add_bubble(true, "语音录音中…");
+}
+
+/* The recording just ended: the user bubble becomes "语音 5.3秒". */
+static void chat_listen_end(void)
+{
+    if (!s_chat_user_lbl) {
+        return;
+    }
+    char buf[32];
+    double secs = (double)(esp_timer_get_time() - s_chat_listen_start_us) / 1e6;
+    snprintf(buf, sizeof(buf), "语音 %.1f秒", secs);
+    chat_update_bubble_text(s_chat_user_lbl, buf);
+}
+
+/* The turn just ended: replace the live page bubble with the reply's full
+ * messages, one bubble each. No-ops if the turn already did this. */
+static void chat_turn_finish(void)
+{
+    if (!s_chat_content) {
+        return;
+    }
+    if (!s_chat_turn_active) {
+        /* A saved note's reply, with no press in this session: still show it. */
+        s_chat_turn_active = true;
+        s_chat_full_added = false;
+    }
+    if (s_chat_full_added) {
+        return;
+    }
+    s_chat_full_added = true;
+    int count = muse_hatch_turn_message_count();
+    if (count <= 0) {
+        return;
+    }
+    static char text[1024];
+    if (!muse_hatch_turn_message_text(0, text, sizeof(text))) {
+        return;
+    }
+    /* A turn with no new reply must not re-add the previous turn's reply:
+     * session texts survive until the next turn overwrites them, so a
+     * failed or empty turn would otherwise duplicate the last bubble.
+     * Skip only when there was no live bubble this turn and the last
+     * assistant bubble already holds exactly this text. */
+    if (!s_chat_live_lbl) {
+        uint32_t n = lv_obj_get_child_count(s_chat_content);
+        if (n) {
+            lv_obj_t *last_wrap = lv_obj_get_child(s_chat_content, n - 1);
+            lv_obj_t *last = lv_obj_get_child_count(last_wrap) ? lv_obj_get_child(last_wrap, 0) : NULL;
+            bool last_user = last && (int)(intptr_t)lv_obj_get_user_data(last) != 0;
+            lv_obj_t *last_lbl = last && lv_obj_get_child_count(last) ? lv_obj_get_child(last, 0) : NULL;
+            if (!last_user && last_lbl && !strcmp(lv_label_get_text(last_lbl), text)) {
+                return;
+            }
+        }
+    }
+    for (int i = 0; i < count; i++) {
+        if (!muse_hatch_turn_message_text(i, text, sizeof(text))) {
+            continue;
+        }
+        if (i == 0 && s_chat_live_lbl) {
+            chat_update_bubble_text(s_chat_live_lbl, text);
+            s_chat_live_lbl = NULL;
+        } else {
+            chat_add_bubble(false, text);
+        }
+    }
+}
+
+/* While a reply is arriving, show its full text so far in one live
+ * bubble, growing as text arrives. The old code showed the face caption
+ * page here: a page is only 2 lines pre-wrapped to the face's width,
+ * so in a chat bubble (narrower, 12 Chinese chars a line) those lines
+ * broke early, left short/empty lines, and only turned every few
+ * seconds as speech advanced, until the turn ended and the full text
+ * replaced it. The chat page is a transcript, not a karaoke display:
+ * full text wraps to the bubble's own width, fills every line, and
+ * arrives as fast as the server sends it, ahead of the audio.
+ * Only if no message text has arrived yet (audio-only edge case) does
+ * it fall back to the caption page. */
+static void chat_live_caption(const char *caption)
+{
+    if (!s_chat_content) {
+        return;
+    }
+    static char text[1024];
+    const char *show = NULL;
+    if (muse_hatch_turn_message_count() > 0 &&
+        muse_hatch_turn_message_text(0, text, sizeof(text))) {
+        /* Full text first: it may already have arrived while the
+         * caption still says SENDING / NOTE SENT, and waiting for the
+         * caption to turn would delay the bubble by seconds. */
+        show = text;
+    } else {
+        if (!caption[0] || caption[0] == '"') {
+            return;   /* quoted captions are the note's echo, not the reply */
+        }
+        if (!strcmp(caption, muse_tr("SENDING VOICE NOTE")) ||
+            !strcmp(caption, muse_tr("NOTE SENT - WAITING FOR MUSE")) ||
+            !strcmp(caption, muse_tr("SENDING SAVED NOTE")) ||
+            !strcmp(caption, muse_tr("SAVED NOTE SENT"))) {
+            return;
+        }
+        show = caption;
+    }
+    if (s_chat_live_lbl) {
+        /* Caption pages change as speech advances even when the reply
+         * text has not: skip those, so the bubble is not resized and
+         * scrolled again for nothing. */
+        if (!strcmp(lv_label_get_text(s_chat_live_lbl), show)) {
+            return;
+        }
+        chat_update_bubble_text(s_chat_live_lbl, show);
+    } else {
+        s_chat_live_lbl = chat_add_bubble(false, show);
+    }
 }
 
 static void show_speaker(bool on)
@@ -840,12 +1249,20 @@ static void build_screen(void)
 
     lv_obj_t *face = scr;
     if (muse_board->touch) {
-        /* Swipe left from Muse for settings. */
+        /* Tiles, left to right: chat, face, settings. Swipe right on the
+         * face for the chat page, swipe left on the face for settings.
+         * Tileview columns are unsigned, so chat cannot be at -1: the face
+         * moves to column 1 and the initial tile is set to it in
+         * muse_ui_start(), after all tiles exist. */
         s_tv = lv_tileview_create(scr);
         lv_obj_set_style_bg_color(s_tv, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_tv, LV_OPA_COVER, 0);
         lv_obj_set_scrollbar_mode(s_tv, LV_SCROLLBAR_MODE_OFF);
-        s_face = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+        s_chat_tile = lv_tileview_add_tile(s_tv, 0, 0, LV_DIR_RIGHT);
+        lv_obj_set_scrollbar_mode(s_chat_tile, LV_SCROLLBAR_MODE_OFF);
+        lv_obj_set_style_bg_color(s_chat_tile, lv_color_black(), 0);
+        lv_obj_set_style_bg_opa(s_chat_tile, LV_OPA_COVER, 0);
+        s_face = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_HOR);
         /* It never scrolls, but LVGL would size its scrollbars from all its
          * children every time it draws any part of it. */
         lv_obj_set_scrollbar_mode(s_face, LV_SCROLLBAR_MODE_OFF);
@@ -853,7 +1270,7 @@ static void build_screen(void)
          * shows as a different-coloured square around the character. */
         lv_obj_set_style_bg_color(s_face, lv_color_black(), 0);
         lv_obj_set_style_bg_opa(s_face, LV_OPA_COVER, 0);
-        s_settings = lv_tileview_add_tile(s_tv, 1, 0, LV_DIR_LEFT);
+        s_settings = lv_tileview_add_tile(s_tv, 2, 0, LV_DIR_LEFT);
         face = s_face;
     }
 
@@ -1068,6 +1485,7 @@ static void on_any_press(lv_event_t *e)
 {
     (void)e;
     muse_state_poke();
+    s_last_activity_us = esp_timer_get_time();
 }
 
 static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
@@ -1089,11 +1507,12 @@ static lv_obj_t *make_control_icon(lv_obj_t *scr, const muse_button_hint_t *pos,
 static void update_control_hints(muse_mode_t mode)
 {
     if (!s_ptt_hint) return;
-    /* Don't obscure settings rows/keyboards with floating physical icons. */
-    bool settings = s_tv && lv_tileview_get_tile_active(s_tv) == s_settings;
-    lv_obj_set_flag(s_ptt_hint, LV_OBJ_FLAG_HIDDEN, settings);
-    lv_obj_set_flag(s_spk_hint, LV_OBJ_FLAG_HIDDEN, settings);
-    lv_obj_set_flag(s_pwr_hint, LV_OBJ_FLAG_HIDDEN, settings);
+    /* Don't obscure settings rows/keyboards or the chat bubbles with
+     * floating physical icons: the hints belong to the face tile only. */
+    bool not_face = s_tv && lv_tileview_get_tile_active(s_tv) != s_face;
+    lv_obj_set_flag(s_ptt_hint, LV_OBJ_FLAG_HIDDEN, not_face);
+    lv_obj_set_flag(s_spk_hint, LV_OBJ_FLAG_HIDDEN, not_face);
+    lv_obj_set_flag(s_pwr_hint, LV_OBJ_FLAG_HIDDEN, not_face);
     static int last_mode = -1;
     if ((int)mode != last_mode) {
         color_mic(s_ptt_hint, mode == MUSE_MODE_LISTENING ? 0x64d4ff : 0x80bfff);
@@ -1111,8 +1530,8 @@ static void build_overlays(void)
 {
     lv_obj_t *scr = lv_screen_active();
 
-    /* Page dots. */
-    for (int i = 0; i < 2 && s_tv; i++) {
+    /* Page dots: chat, face, settings, in tile order. */
+    for (int i = 0; i < 3 && s_tv; i++) {
         lv_obj_t *d = lv_obj_create(scr);
         lv_obj_remove_style_all(d);
         lv_obj_set_size(d, 8, 8);
@@ -1120,9 +1539,72 @@ static void build_overlays(void)
         lv_obj_set_style_bg_opa(d, LV_OPA_COVER, 0);
         lv_obj_set_style_bg_color(d, lv_color_hex(COLOR_DOT_OFF), 0);
         lv_obj_remove_flag(d, LV_OBJ_FLAG_CLICKABLE);
-        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, i ? 8 : -8, -14);
+        lv_obj_align(d, LV_ALIGN_BOTTOM_MID, (i - 1) * 16, -14);
         s_dots[i] = d;
     }
+
+    /* Chat page: with touch, the tile left of the face (swipe right on the
+     * face to enter, swipe left or tap 返回 to leave); without touch, a
+     * hidden overlay on the screen. The status bar sits above a
+     * vertical-scroll bubble list. */
+    s_chat = s_chat_tile ? s_chat_tile : lv_obj_create(scr);
+    lv_obj_remove_style_all(s_chat);
+    /* remove_style_all also clears the LV_PCT(100) size tileview gave the
+     * tile, leaving it at LVGL's 130x130 default, which tileview then
+     * snap-centres and clips every child to. That was the 144e185/eb5fd03
+     * small centred card: bar, list and bubbles were sized correctly
+     * (272/256) but only the 130x130 window showed. Restore full size
+     * unconditionally, for the tile and the overlay alike. */
+    lv_obj_set_size(s_chat, s_w, s_h);
+    if (!s_chat_tile) {
+        lv_obj_add_flag(s_chat, LV_OBJ_FLAG_HIDDEN);
+    }
+    /* No layout on the tile itself: its children are placed by hand. */
+    lv_obj_set_layout(s_chat, LV_LAYOUT_NONE);
+    lv_obj_set_style_bg_color(s_chat, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_chat, LV_OPA_COVER, 0);
+    lv_obj_remove_flag(s_chat, LV_OBJ_FLAG_SCROLLABLE);
+    {
+        lv_obj_t *bar = lv_obj_create(s_chat);
+        lv_obj_remove_style_all(bar);
+        lv_obj_set_size(bar, s_w, CHAT_STATUS_H);
+        lv_obj_set_pos(bar, 0, 0);
+        lv_obj_add_flag(bar, LV_OBJ_FLAG_FLOATING);
+        lv_obj_set_style_bg_color(bar, lv_color_hex(0x1a1530), 0);
+        lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+        lv_obj_add_event_cb(bar, on_chat_close_clicked, LV_EVENT_CLICKED, NULL);
+        s_chat_status_lbl = lv_label_create(bar);
+        lv_obj_set_style_text_font(s_chat_status_lbl, chat_font(), 0);
+        lv_obj_set_style_text_color(s_chat_status_lbl, lv_color_hex(0xffffff), 0);
+        lv_label_set_text(s_chat_status_lbl, "");
+        lv_obj_align(s_chat_status_lbl, LV_ALIGN_LEFT_MID, 8, 0);
+        lv_obj_t *close = lv_label_create(bar);
+        lv_obj_set_style_text_font(close, chat_font(), 0);
+        lv_obj_set_style_text_color(close, lv_color_hex(0xa77dff), 0);
+        lv_label_set_text(close, "返回");
+        lv_obj_add_flag(close, LV_OBJ_FLAG_CLICKABLE);
+        lv_obj_add_event_cb(close, on_chat_close_clicked, LV_EVENT_CLICKED, NULL);
+        lv_obj_align(close, LV_ALIGN_RIGHT_MID, -8, 0);
+    }
+    s_chat_content = lv_obj_create(s_chat);
+    lv_obj_remove_style_all(s_chat_content);
+    lv_obj_set_size(s_chat_content, s_w, s_h - CHAT_STATUS_H);
+    lv_obj_set_pos(s_chat_content, 0, CHAT_STATUS_H);
+    lv_obj_add_flag(s_chat_content, LV_OBJ_FLAG_FLOATING);
+    lv_obj_set_style_bg_color(s_chat_content, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_chat_content, LV_OPA_COVER, 0);
+    lv_obj_set_scrollbar_mode(s_chat_content, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_set_scroll_dir(s_chat_content, LV_DIR_VER);
+    lv_obj_add_flag(s_chat_content, LV_OBJ_FLAG_SCROLLABLE);
+    /* Flex column, like Xiaozhi's chat page: wrappers stack full-width
+     * and the list fills the whole tile, instead of manual y positions
+     * that a parent layout could override. */
+    lv_obj_set_layout(s_chat_content, LV_LAYOUT_FLEX);
+    lv_obj_set_flex_flow(s_chat_content, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(s_chat_content, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+    lv_obj_set_style_pad_all(s_chat_content, 8, 0);
+    lv_obj_set_style_pad_gap(s_chat_content, 8, 0);
+    s_chat_next_y = 8;
 
     /* A downloaded image: over everything on the screen (and in snapshots),
      * under the pairing code and sleep cover on the top layer. */
@@ -1275,21 +1757,24 @@ static void update_chrome(float now)
     s_next_settings_tick = now + SETTINGS_TICK_S;
 
     if (s_tv) {
-        int page = lv_tileview_get_tile_active(s_tv) == s_settings;
+        lv_obj_t *active = lv_tileview_get_tile_active(s_tv);
+        int page = active == s_chat_tile ? 0 : active == s_settings ? 2 : 1;
+        bool settings_page = active == s_settings;
         bool subpage = muse_settings_ui_in_subpage();
-        bool swipe = !page || !subpage;
+        bool swipe = !settings_page || !subpage;
         if (swipe != lv_obj_has_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE)) {
             lv_obj_set_flag(s_tv, LV_OBJ_FLAG_SCROLLABLE, swipe);
         }
         int shown = page * 2 + subpage;
         if (shown != s_shown_page) {
-            for (int i = 0; i < 2; i++) {
+            for (int i = 0; i < 3; i++) {
+                if (!s_dots[i]) continue;
                 lv_obj_set_style_bg_color(s_dots[i], lv_color_hex(i == page ? COLOR_ACCENT : COLOR_DOT_OFF), 0);
-                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, page && subpage);
+                lv_obj_set_flag(s_dots[i], LV_OBJ_FLAG_HIDDEN, settings_page && subpage);
             }
             s_shown_page = shown;
         }
-        muse_settings_ui_tick(lv_obj_get_scroll_x(s_tv) > 0);
+        muse_settings_ui_tick(s_face && lv_obj_get_scroll_x(s_tv) > lv_obj_get_x(s_face));
     }
 
     /* Joining, the icon blinks: the compact layout has no state label. */
@@ -1500,15 +1985,23 @@ static void update_status(muse_mode_t mode, float now)
 
     static char caption[MUSE_CAPTION_MAX];
     bool fresh = muse_state_caption(caption, sizeof(caption), &s_caption_version);
+    /* Face page no longer shows reply text: a dedicated chat page
+     * exists (s_tv), so replies live there. During THINKING/SPEAKING
+     * the face keeps only the avatar, the state name and the status
+     * row; the reply label/caption are hidden, and the avatar does
+     * not shrink into an answer layout. Short non-reply captions
+     * (listening time, hold-longer, setup errors) still show on the
+     * face when not replying, because they are not chat messages. */
+    bool reply_phase = mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING;
     int answer = -1;
-    if (s_reply_lbl) {
+    if (s_reply_lbl && !s_tv) {
         /* The speaker picks the layout, even mid-reply: the voice task pages to fit. */
         int layout = muse_settings_speaker_on() ? ANSWER_HEARD : ANSWER_READ;
         if (layout != s_page_for) {
             muse_state_set_page(s_answers[layout].cols, s_answers[layout].lines);
             s_page_for = layout;
         }
-        if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
+        if (reply_phase) {
             answer = layout;
         }
     }
@@ -1516,7 +2009,14 @@ static void update_status(muse_mode_t mode, float now)
         set_answer(answer);
         fresh = true;   /* the caption moves between labels */
     }
-    if (fresh) {
+    if (s_tv && reply_phase) {
+        if (s_caption_lbl) {
+            lv_obj_add_flag(s_caption_lbl, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (s_reply_lbl) {
+            lv_obj_add_flag(s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
+        }
+    } else if (fresh) {
         lv_obj_t *lbl = answer >= 0 ? s_reply_lbl : s_caption_lbl;
 #if CONFIG_MUSE_CJK_FONT
         if (s_small) {
@@ -1532,6 +2032,14 @@ static void update_status(muse_mode_t mode, float now)
         if (s_reply_lbl) {
             lv_obj_add_flag(answer >= 0 ? s_caption_lbl : s_reply_lbl, LV_OBJ_FLAG_HIDDEN);
         }
+    }
+    /* Live chat text is polled every frame, not only when the face
+     * caption changes: the caption only turns when speech reaches the
+     * next page (seconds apart), while reply text arrives from the
+     * server ahead of the audio. chat_live_caption() itself dedupes,
+     * so a frame with no new text costs only a copy and a compare. */
+    if (mode == MUSE_MODE_THINKING || mode == MUSE_MODE_SPEAKING) {
+        chat_live_caption(caption);
     }
     update_power(now);
 }
@@ -1604,11 +2112,46 @@ static void frame_tick(lv_timer_t *timer)
     float now = (float)esp_timer_get_time() / 1e6f;
 
     if (mode != s_last_mode) {
+        if (s_last_mode == MUSE_MODE_LISTENING && mode != MUSE_MODE_LISTENING) {
+            chat_listen_end();
+        }
         if (mode == MUSE_MODE_LISTENING) {
             image_hide_locked();
-            muse_ui_show_face();
+            /* From settings, a press goes back to the face; from the chat
+             * tile it stays there so the new bubbles are visible live. */
+            if (!s_tv || lv_tileview_get_tile_active(s_tv) != s_chat_tile) {
+                muse_ui_show_face();
+            }
+            chat_turn_start();
+        } else if (mode == MUSE_MODE_IDLE && s_last_mode != MUSE_MODE_COUNT) {
+            chat_turn_finish();
         }
+        chat_set_status(mode);
         s_last_mode = mode;
+        /* A press starts a turn, and a turn ending starts the 20 s
+         * reading window: either way, the idle clock restarts. */
+        s_last_activity_us = esp_timer_get_time();
+    }
+    /* Idle return to the face: 20 s with no operation (no press, no
+     * tile change, no touch held) and no turn running, while off the
+     * face, goes back to the face tile. A turn running gates it, so a
+     * reply is never cut off mid-way; the clock restarts when the
+     * turn ends, above. While a touch is held, the user is still
+     * operating, so a long drag cannot trigger a return mid-drag. */
+    if (s_tv && s_face && mode == MUSE_MODE_IDLE) {
+        lv_obj_t *tile = lv_tileview_get_tile_active(s_tv);
+        if (tile != s_last_tile) {
+            s_last_tile = tile;
+            s_last_activity_us = esp_timer_get_time();
+        }
+        if (s_indev && lv_indev_get_state(s_indev) == LV_INDEV_STATE_PRESSED) {
+            s_last_activity_us = esp_timer_get_time();
+        }
+        if (tile != s_face &&
+            esp_timer_get_time() - s_last_activity_us >= (int64_t)FACE_IDLE_S * 1000000) {
+            lv_tileview_set_tile(s_tv, s_face, LV_ANIM_ON);
+            s_last_activity_us = esp_timer_get_time();
+        }
     }
     if (update_sleep()) {
         return;
@@ -1621,9 +2164,11 @@ static void frame_tick(lv_timer_t *timer)
     if (s_image_dsc.data) {
         return;   /* the image covers the face */
     }
-    if (s_tv && lv_obj_get_scroll_x(s_tv) != 0) {
-        /* Off screen, or sliding to or from settings: hold still so the
-         * slide gets the whole frame time. */
+    if (s_tv && s_face && lv_obj_get_scroll_x(s_tv) != lv_obj_get_x(s_face)) {
+        /* Off the face, or sliding to or from another tile: hold the
+         * avatar still so the slide gets the whole frame time, but still
+         * run update_status() below so live chat bubbles keep updating. */
+        update_status(mode, now);
         return;
     }
 
@@ -1631,12 +2176,14 @@ static void frame_tick(lv_timer_t *timer)
     float level = muse_state_level();
     s_level += (level - s_level) * (level > s_level ? 0.6f : 0.2f);
 
+    int expr = esp_timer_get_time() < s_click_expr_until_us ? s_click_expr : MUSE_EXPR_NORMAL;
     muse_pose_t pose = {
         .mode = mode,
         .t = now,
         .mode_t = mode_t,
         .level = s_level,
         .happy = muse_state_happiness(),
+        .expr = expr,
     };
     muse_pixel_render(&pose);
     invalidate_muse();
@@ -1691,6 +2238,11 @@ esp_err_t muse_ui_start(void)
         muse_menu_build(lv_screen_active(), s_w, s_h);
     }
     build_overlays();
+    if (s_tv) {
+        /* The face is column 1 now (chat is column 0), so start there,
+         * not on the chat tile. */
+        lv_tileview_set_tile(s_tv, s_face, LV_ANIM_OFF);
+    }
     lv_timer_create(frame_tick, muse_board->frame_ms, NULL);
     s_ready = true;
     muse_board->display_unlock();

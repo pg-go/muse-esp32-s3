@@ -30,6 +30,7 @@
 #include "muse_state.h"
 #include "muse_ui.h"
 #include "muse_voice.h"
+#include "muse_wav_record.h"
 #include "muse_wifi.h"
 
 static const char *TAG = "muse";
@@ -72,6 +73,9 @@ void muse_app_run(const muse_board_t *board)
     muse_state_set_caption("WAKING UP...");
     ESP_ERROR_CHECK(muse_ui_start());
     ESP_LOGI(TAG, "UI built: free internal %u", (unsigned)heap_caps_get_free_size(MALLOC_CAP_INTERNAL));
+    /* Best-effort TF mount for WAV recording: a missing card or
+     * unconfigured SD pins only disables recording, never boot. */
+    muse_wav_record_init();
 
     QueueHandle_t q = xQueueCreate(16, sizeof(muse_input_event_t));
     ESP_ERROR_CHECK(muse_input_start(q));
