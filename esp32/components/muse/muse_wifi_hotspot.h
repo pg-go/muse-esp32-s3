@@ -16,23 +16,29 @@
 
 #pragma once
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include <stdbool.h>
 #include <stddef.h>
 
-/* Hotspot provisioning (T1-hotspot, additive only).
- *
- * The board opens an open (no-password, user-confirmed) Wi-Fi hotspot
- * named MuseGadget-XXXXXX, serves a small page at 192.168.4.1, and lets a
- * phone pick a home network and type its password there, instead of
- * typing on the small screen. Saving reuses the existing path:
- * muse_settings_set_wifi() + muse_wifi_apply(), so the keeper task joins
- * the new network exactly as it does after a screen or BLE change.
- * On success, or after 5 minutes with no success, the hotspot stops and
- * Wi-Fi returns to station-only mode. The old screen and BLE paths are
- * untouched and remain as fallbacks.
+/*
+ * Hotspot provisioning: Xiaozhi esp-wifi-connect port (see
+ * muse_wifi_config_ap.cpp / muse_dns_server.cpp / muse_ssid_manager.cpp
+ * and assets/wifi_configuration*.html, copied verbatim except for the
+ * Muse-only adaptations noted in muse_wifi_config_ap.cpp).
+ * This file is only the thin C wrapper the settings screen calls:
+ * start/stop/running/name, plus a 5-minute abandon timeout. The portal
+ * itself (DNS, captive probes, scan, submit, ConnectToWifi retry) is
+ * Xiaozhi's, not a hand-written page.
  */
 bool muse_wifi_hotspot_start(void);
 void muse_wifi_hotspot_stop(void);
 bool muse_wifi_hotspot_running(void);
 /* Copies the hotspot SSID out (empty when not running). */
 void muse_wifi_hotspot_name(char *out, size_t cap);
+
+#ifdef __cplusplus
+}
+#endif

@@ -42,7 +42,11 @@ if(CONFIG_MUSE_ENABLED)
         "muse_keypad.c"
         "muse_lv_mem.c"
         "muse_link.c"
-        "muse_wifi_hotspot.c"
+        "muse_wifi_hotspot.cpp"
+        "muse_wifi_config_ap.cpp"
+        "muse_dns_server.cpp"
+        "muse_ssid_manager.cpp"
+        "muse_wifi_config_html.c"
         "muse_ble.c")
     if(CONFIG_MUSE_HATCH)
         list(APPEND srcs "muse_chat.c" "muse_account_api.c" "muse_chat_session.cpp")
