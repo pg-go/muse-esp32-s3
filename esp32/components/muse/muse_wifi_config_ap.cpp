@@ -183,6 +183,11 @@ void WifiConfigurationAp::StartAccessPoint()
     ESP_ERROR_CHECK(esp_wifi_set_band_mode(WIFI_BAND_MODE_2G_ONLY));
 #endif
 
+    /* Second DHCP assertion (see wrapper note on stop-before-start):
+     * AP_START normally starts it; this only covers the case where the
+     * netif is already up and DHCP was not started yet. */
+    esp_netif_dhcps_start(ap_netif_);
+
     ESP_LOGI(TAG, "Access Point started with SSID %s", ssid.c_str());
 
     // 加载高级配置
@@ -918,9 +923,9 @@ void WifiConfigurationAp::Stop() {
         instance_got_ip_ = nullptr;
     }
 
-    // Muse adaptation: wifi_mgr owns the STA driver, so never stop it here.
-    // Just drop back to station-only mode; the keeper rejoins afterwards.
-    esp_wifi_set_mode(WIFI_MODE_STA);
+    // Muse adaptation: wifi_mgr owns the STA driver, so never stop the
+    // driver itself here. Just drop back to station-only mode; the
+    // keeper rejoins afterwards via muse_wifi_apply() in the wrapper.
     
     // 销毁网络接口
     if (ap_netif_) {

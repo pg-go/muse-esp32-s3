@@ -5,6 +5,8 @@
  * because its board is in config mode; Muse can already be on Wi-Fi,
  * so an abandoned hotspot must not stay open forever). Success closes
  * via Xiaozhi's own /done.html -> /exit path, not via this watcher.
+ * Start stops the station first (Xiaozhi's station-stop), so the board
+ * is offline during provisioning and rejoins on stop.
  * The watcher never stops on STA-connected: Xiaozhi's ConnectToWifi
  * deliberately test-connects in APSTA mode, and that must not kill
  * the portal mid-submit.
@@ -15,6 +17,7 @@ extern "C" {
 #include "muse_settings.h"
 #include "muse_wifi.h"
 }
+#include "esp_wifi.h"
 
 #include <string.h>
 #include <freertos/FreeRTOS.h>
@@ -42,6 +45,17 @@ bool muse_wifi_hotspot_start(void)
     if (s_running) {
         return true;
     }
+    /* Xiaozhi parity, and the fix for "no IP": WifiManager::StartConfigAp
+     * auto-stops the station before starting the config AP, so the
+     * following esp_wifi_start() in StartAccessPoint is a real start and
+     * fires WIFI_EVENT_AP_START, which is what starts the DHCP server.
+     * Keeping STA running (the previous Muse adaptation) left wifi
+     * already started, so AP_START never fired and DHCP never started:
+     * phones associated but only got a 169.254 self-assigned address.
+     * The board is offline while the hotspot is open; Stop() + apply
+     * rejoins afterwards. */
+    esp_wifi_disconnect();
+    esp_wifi_stop();
     s_ap = new WifiConfigurationAp();
     s_ap->SetSsidPrefix("MuseGadget");
     s_ap->SetLanguage("zh-CN");
